@@ -217,3 +217,43 @@ fn chroma_dct_type_is_not_applied_to_420_chroma() {
     let differ = wrong[luma..].iter().zip(&f[0].data[luma..]).filter(|(a, b)| a != b).count();
     assert!(differ > (wrong.len() - luma) / 2, "chroma differs from the wrong decode in {differ} samples");
 }
+
+/// The encoder on natural pictures: the first 12 frames of tcela-7 (Mobile &
+/// Calendar, 720x480) as decoded, re-encoded at quantiser_scale_code 6 with
+/// two B-pictures between references, and decoded again.
+#[test]
+fn encoder_on_natural_pictures() {
+    use mpeg2::{Encoder, EncoderConfig, RateControl};
+    let Some(dir) = suite() else { return };
+    let src: Vec<Frame> =
+        decode_file(&dir.join("main-profile/tcela/tcela-7-slices/tcela-7.bits")).into_iter().take(12).collect();
+    let (w, h) = (src[0].width, src[0].height);
+    let cfg = EncoderConfig {
+        rate_control: RateControl::ConstantQuantiser(6),
+        frame_rate: (30000, 1001),
+        ..EncoderConfig::new(w, h)
+    };
+    let mut enc = Encoder::new(cfg).unwrap();
+    let mut stream = Vec::new();
+    for f in &src {
+        stream.extend(enc.encode(f).unwrap());
+    }
+    stream.extend(enc.finish().unwrap());
+    let out = decode_file_bytes(&stream);
+    assert_eq!(out.len(), src.len());
+    let psnr = |a: &[u8], b: &[u8]| {
+        let mse = a.iter().zip(b).map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2)).sum::<f64>() / a.len() as f64;
+        10.0 * (255.0f64 * 255.0 / mse).log10()
+    };
+    let y = src.iter().zip(&out).map(|(a, b)| psnr(a.plane(0), b.plane(0))).sum::<f64>() / src.len() as f64;
+    let rate = stream.len() as f64 * 8.0 * 30000.0 / 1001.0 / src.len() as f64;
+    eprintln!("conformance: tcela-7 re-encoded at q 6: {:.2} Mb/s, luma PSNR {y:.2} dB", rate / 1e6);
+    assert!(y > 35.5, "luma PSNR {y:.2}");
+}
+
+fn decode_file_bytes(data: &[u8]) -> Vec<Frame> {
+    let mut dec = Decoder::new();
+    let mut frames = dec.decode(data).unwrap();
+    frames.extend(dec.flush().unwrap());
+    frames
+}
