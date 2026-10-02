@@ -48,6 +48,7 @@ struct SliceState {
 
 /// Codes the slices of one picture into `w`, reconstructing into `recon`
 /// when the picture is a reference.
+#[allow(clippy::needless_range_loop)] // mbx is a position, not just an index
 pub(crate) fn code_picture(
     s: &PictureSettings,
     src: &PicBuf,
@@ -165,10 +166,10 @@ fn decide(
                 best = Some((cost, 1 << d, v));
             }
         }
-        if s.picture_type == 3 && fwd.is_some() && bwd.is_some() {
+        if let (3, Some(f), Some(b)) = (s.picture_type, fwd, bwd) {
             let mut p = MbPred::new();
-            motion::predict(fwd.unwrap(), x, y, found[0], false, &mut p);
-            motion::predict(bwd.unwrap(), x, y, found[1], true, &mut p);
+            motion::predict(f, x, y, found[0], false, &mut p);
+            motion::predict(b, x, y, found[1], true, &mut p);
             let sad = motion::sad_pred(src, x, y, &p.y) + 48;
             if best.is_none_or(|b| sad < b.0) {
                 best = Some((sad, 3, found));
@@ -181,12 +182,11 @@ fn decide(
             mb.dirs = dirs;
             mb.mv = mv;
             let mut first = true;
-            for d in 0..2 {
+            for (d, (&v, refp)) in mv.iter().zip([fwd, bwd]).enumerate() {
                 if dirs & (1 << d) == 0 {
                     continue;
                 }
-                let refp = if d == 0 { fwd } else { bwd }.expect("reference");
-                motion::predict(refp, x, y, mv[d], !first, &mut mb.pred);
+                motion::predict(refp.expect("reference"), x, y, v, !first, &mut mb.pred);
                 first = false;
             }
         }

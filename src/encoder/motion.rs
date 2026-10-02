@@ -51,6 +51,7 @@ pub(crate) fn predict(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg: bool
 /// limit), keeping the whole prediction inside the reference picture.
 /// `candidates` are starting points in half samples. Returns the vector and
 /// its SAD.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn search(
     src: &PicBuf,
     refp: &PicBuf,

@@ -153,8 +153,8 @@ fn predict_plane(
     // int_vec = vector DIV 2 (toward −∞), half_flag = the remainder.
     let ix = x + (mv[0] >> 1);
     let iy = y + (mv[1] >> 1);
-    let hx = (mv[0] & 1) as i32;
-    let hy = (mv[1] & 1) as i32;
+    let hx = mv[0] & 1;
+    let hy = mv[1] & 1;
     let width = stride as i32;
     let inside = ix >= 0 && iy >= 0 && ix + w + hx <= width && iy + h + hy <= lines;
     let at = |sx: i32, sy: i32| -> u32 {
@@ -234,7 +234,7 @@ mod tests {
         // A negative odd vector: −1 → int −1, half 1 (DIV rounds toward −∞).
         let r = Region { mv: [-1, 0], ..r };
         predict(&p, View::Frame, ChromaFormat::Yuv420, &r, &mut pred);
-        assert_eq!(u32::from(pred.y[0]), (s(7, 8) + s(8, 8) + 1) / 2);
+        assert_eq!(u32::from(pred.y[0]), (s(7, 8) + s(8, 8)).div_ceil(2));
     }
 
     #[test]

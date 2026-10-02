@@ -138,6 +138,9 @@ pub(crate) fn split_run_level(v: i16) -> (usize, i32) {
     ((v >> 8) as usize, i32::from(v & 0xff))
 }
 
+/// `[table][run][level]` → `(code, length)`, codes without the sign bit.
+type DctCodes = [[[(u32, u32); 41]; 32]; 2];
+
 /// `(code, length)` lookups for the encoder.
 pub(crate) struct Encoders {
     /// Index = increment − 1 (1..=33).
@@ -149,7 +152,7 @@ pub(crate) struct Encoders {
     motion_code: [(u32, u32); 17],
     dc_size: [[(u32, u32); 12]; 2],
     /// `[table][run][level]`, codes without the sign bit; length 0 = none.
-    dct: Box<[[[(u32, u32); 41]; 32]; 2]>,
+    dct: Box<DctCodes>,
 }
 
 pub(crate) fn encoders() -> &'static Encoders {

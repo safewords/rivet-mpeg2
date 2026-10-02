@@ -231,8 +231,8 @@ fn skipped_mb(st: &mut State, bufs: &mut [PicBuf], addr: usize) -> Result<()> {
                 return Err(invalid("skipped macroblock after an intra macroblock in a B-picture"));
             }
             let mut mv = [[[0; 2]; 2]; 2];
-            for s in 0..2 {
-                mv[0][s] = scale_full_pel(p, s, st.pmv[0][s]);
+            for (s, v) in mv[0].iter_mut().enumerate() {
+                *v = scale_full_pel(p, s, st.pmv[0][s]);
             }
             Motion { dirs, kind, sel: [[parity; 2]; 2], mv, dmv: [0; 2] }
         }

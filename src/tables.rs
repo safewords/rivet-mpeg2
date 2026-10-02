@@ -47,9 +47,12 @@ pub(crate) const MB_ADDRESS_INCREMENT: &[(&str, u8)] = &[
 ];
 
 /// `macroblock_escape`: `0000 0001 000` (adds 33 to the increment).
+// The digit groups follow the printed table.
+#[allow(clippy::unusual_byte_groupings)]
 pub(crate) const MB_ESCAPE: (u32, u32) = (0b0000_0001_000, 11);
 /// ISO/IEC 11172-2 `macroblock_stuffing`: `0000 0001 111` (discarded; H.262
 /// D.9.2).
+#[allow(clippy::unusual_byte_groupings)]
 pub(crate) const MB_STUFFING: (u32, u32) = (0b0000_0001_111, 11);
 
 /// macroblock_type flag bits.
