@@ -237,7 +237,7 @@ impl Encoders {
 
     /// Bits of the VLC for a run/level pair (with its sign bit), or `None`
     /// when it needs an escape.
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn dct_len(&self, table: usize, run: usize, level: i32) -> Option<u32> {
         let a = level.unsigned_abs() as usize;
         if run < 32 && a <= 40 {

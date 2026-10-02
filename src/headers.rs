@@ -23,8 +23,7 @@ pub(crate) const EXT_QUANT_MATRIX: u32 = 3;
 pub(crate) const EXT_SEQUENCE_SCALABLE: u32 = 5;
 pub(crate) const EXT_PICTURE_CODING: u32 = 8;
 
-/// picture_structure values.
-pub(crate) const TOP_FIELD: u8 = 1;
+/// picture_structure values (1 is the top field).
 pub(crate) const BOTTOM_FIELD: u8 = 2;
 pub(crate) const FRAME_PICTURE: u8 = 3;
 
