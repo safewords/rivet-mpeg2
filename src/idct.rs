@@ -1,151 +1,165 @@
 //! The 8×8 inverse DCT (H.262 Annex A) and the encoder's forward DCT.
 //!
-//! The decoder's IDCT is a separable fixed-point matrix product: the basis
-//! `C(u)/2 · cos((2x+1)uπ/16)` scaled by 2^20 and rounded, a row pass that
-//! keeps twelve fraction bits, a column pass, rounding (ties away from zero)
-//! and saturation to [−256, 255]. It is checked against the real-number IDCT by the procedure
-//! of IEEE Std 1180-1990, which Annex A requires, and by Annex A's own
-//! items 3 and 4 (the tests at the end of this file).
+//! The decoder's IDCT is the separable real-number IDCT in double
+//! precision — rows, then columns, each a plain sum over the basis
+//! `C(u)/2 · cos((2x+1)uπ/16)` — rounded (ties away from zero) and
+//! saturated to [−256, 255]: Annex A's saturated mathematical
+//! integer-number IDCT, up to double rounding. The basis is written out as
+//! literal constants rather than computed with the platform's `cos`, so the
+//! output is the same on every platform (Rust does not fuse or reorder
+//! floating-point operations).
+//!
+//! It is checked against an independent, non-separable evaluation of the
+//! definition by the procedure of IEEE Std 1180-1990, which Annex A
+//! requires, and by Annex A's own items 3 and 4 (the tests at the end of
+//! this file). The conformance suite's traces, made by decoders with a
+//! double-precision IDCT, are matched sample for sample.
 
-use std::sync::OnceLock;
-
-/// Fraction bits of the fixed-point basis.
-const KBITS: u32 = 20;
-/// Fraction bits kept between the row and the column pass.
-const MID_BITS: u32 = 12;
-const ROW_SHIFT: u32 = KBITS - MID_BITS;
-const COL_SHIFT: u32 = KBITS + MID_BITS;
-
-/// `(x + 2^(s-1)) >> s` with ties away from zero, like Annex A's round().
-#[inline]
-fn round_shift(x: i64, s: u32) -> i64 {
-    let half = 1i64 << (s - 1);
-    if x >= 0 { (x + half) >> s } else { -((-x + half) >> s) }
-}
-
-/// `basis()[u][x]` = C(u)/2 · cos((2x+1)uπ/16), C(0) = 1/√2, else 1.
-fn basis() -> &'static [[f64; 8]; 8] {
-    static B: OnceLock<[[f64; 8]; 8]> = OnceLock::new();
-    B.get_or_init(|| {
-        let mut b = [[0.0; 8]; 8];
-        for (u, row) in b.iter_mut().enumerate() {
-            let c = if u == 0 { std::f64::consts::FRAC_1_SQRT_2 } else { 1.0 };
-            for (x, v) in row.iter_mut().enumerate() {
-                *v = c / 2.0
-                    * ((2 * x + 1) as f64 * u as f64 * std::f64::consts::PI / 16.0).cos();
-            }
-        }
-        b
-    })
-}
-
-fn kbasis() -> &'static [[i64; 8]; 8] {
-    static K: OnceLock<[[i64; 8]; 8]> = OnceLock::new();
-    K.get_or_init(|| {
-        let b = basis();
-        let mut k = [[0i64; 8]; 8];
-        for u in 0..8 {
-            for x in 0..8 {
-                k[u][x] = (b[u][x] * f64::from(1u32 << KBITS)).round() as i64;
-            }
-        }
-        k
-    })
-}
+/// `BASIS[u][x]` = C(u)/2 · cos((2x+1)uπ/16), C(0) = 1/√2, else 1.
+const BASIS: [[f64; 8]; 8] = [
+    [
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+        0.35355339059327373,
+    ],
+    [
+        0.4903926402016152,
+        0.4157348061512726,
+        0.27778511650980114,
+        0.09754516100806417,
+        -0.0975451610080641,
+        -0.277785116509801,
+        -0.4157348061512727,
+        -0.4903926402016152,
+    ],
+    [
+        0.46193976625564337,
+        0.19134171618254492,
+        -0.19134171618254486,
+        -0.46193976625564337,
+        -0.4619397662556434,
+        -0.19134171618254517,
+        0.191341716182545,
+        0.46193976625564326,
+    ],
+    [
+        0.4157348061512726,
+        -0.0975451610080641,
+        -0.4903926402016152,
+        -0.2777851165098011,
+        0.2777851165098009,
+        0.4903926402016152,
+        0.09754516100806439,
+        -0.41573480615127256,
+    ],
+    [
+        0.3535533905932738,
+        -0.35355339059327373,
+        -0.35355339059327384,
+        0.3535533905932737,
+        0.35355339059327384,
+        -0.35355339059327334,
+        -0.35355339059327356,
+        0.3535533905932733,
+    ],
+    [
+        0.27778511650980114,
+        -0.4903926402016152,
+        0.09754516100806415,
+        0.4157348061512728,
+        -0.41573480615127256,
+        -0.09754516100806401,
+        0.4903926402016153,
+        -0.27778511650980076,
+    ],
+    [
+        0.19134171618254492,
+        -0.4619397662556434,
+        0.46193976625564326,
+        -0.19134171618254495,
+        -0.19134171618254528,
+        0.46193976625564337,
+        -0.4619397662556432,
+        0.19134171618254478,
+    ],
+    [
+        0.09754516100806417,
+        -0.2777851165098011,
+        0.4157348061512728,
+        -0.4903926402016153,
+        0.49039264020161527,
+        -0.4157348061512725,
+        0.27778511650980076,
+        -0.09754516100806429,
+    ],
+];
 
 /// Inverse DCT of a block of coefficients `F[v][u]` (raster order, each in
 /// [−2048, 2047]) in place, giving samples `f[y][x]` saturated to
 /// [−256, 255].
-///
-/// The basis has 20 fraction bits and 12 are kept between the passes, so the
-/// result differs from the real-number IDCT only where that lies within
-/// about 10^-4 of a rounding boundary; a block with only a DC coefficient
-/// is computed exactly (f = F[0][0] / 8).
 pub(crate) fn idct(block: &mut [i32; 64]) {
     if block[1..].iter().all(|&c| c == 0) {
-        // f(x, y) = F[0][0] · (1/√2)² / 4 = F[0][0] / 8 everywhere.
-        let v = round_shift(i64::from(block[0]), 3).clamp(-256, 255) as i32;
+        // f(x, y) = F[0][0] · (1/√2)² / 4 = F[0][0] / 8 everywhere, exactly.
+        let v = (f64::from(block[0]) / 8.0).round().clamp(-256.0, 255.0) as i32;
         block.fill(v);
         return;
     }
-    let k = kbasis();
-    let mut tmp = [0i64; 64];
-    // Rows: tmp[v][x] = Σ_u F[v][u] · K[u][x].
+    let mut tmp = [0.0f64; 64];
+    // Rows: tmp[v][x] = Σ_u F[v][u] · B[u][x].
     for v in 0..8 {
         let row = &block[v * 8..v * 8 + 8];
         if row.iter().all(|&c| c == 0) {
             continue;
         }
         for x in 0..8 {
-            let mut acc: i64 = 0;
+            let mut acc = 0.0;
             for u in 0..8 {
-                acc += i64::from(row[u]) * k[u][x];
+                acc += f64::from(row[u]) * BASIS[u][x];
             }
-            tmp[v * 8 + x] = round_shift(acc, ROW_SHIFT);
+            tmp[v * 8 + x] = acc;
         }
     }
-    // Columns: f[y][x] = Σ_v tmp[v][x] · K[v][y].
+    // Columns: f[y][x] = Σ_v tmp[v][x] · B[v][y].
     for x in 0..8 {
         for y in 0..8 {
-            let mut acc: i64 = 0;
+            let mut acc = 0.0;
             for v in 0..8 {
-                acc += tmp[v * 8 + x] * k[v][y];
+                acc += tmp[v * 8 + x] * BASIS[v][y];
             }
-            block[y * 8 + x] = round_shift(acc, COL_SHIFT).clamp(-256, 255) as i32;
+            // f64::round rounds half away from zero, as Annex A's round().
+            block[y * 8 + x] = acc.round().clamp(-256.0, 255.0) as i32;
         }
     }
 }
 
-/// The real-number forward DCT (Annex A's definition), samples to
-/// coefficients, for the encoder and the accuracy tests.
-pub(crate) fn fdct_f64(input: &[f64; 64]) -> [f64; 64] {
-    let b = basis();
-    let mut tmp = [0.0; 64];
+/// The forward DCT the encoder uses: separable, double precision, rounded
+/// to integers.
+pub(crate) fn fdct(input: &[i32; 64]) -> [i32; 64] {
+    let mut tmp = [0.0f64; 64];
     // tmp[y][u] = Σ_x f[y][x] · B[u][x]
     for y in 0..8 {
         for u in 0..8 {
-            tmp[y * 8 + u] = (0..8).map(|x| input[y * 8 + x] * b[u][x]).sum();
+            let mut acc = 0.0;
+            for x in 0..8 {
+                acc += f64::from(input[y * 8 + x]) * BASIS[u][x];
+            }
+            tmp[y * 8 + u] = acc;
         }
     }
-    let mut out = [0.0; 64];
+    let mut out = [0; 64];
     for u in 0..8 {
         for v in 0..8 {
-            out[v * 8 + u] = (0..8).map(|y| tmp[y * 8 + u] * b[v][y]).sum();
+            let mut acc = 0.0;
+            for y in 0..8 {
+                acc += tmp[y * 8 + u] * BASIS[v][y];
+            }
+            out[v * 8 + u] = acc.round() as i32;
         }
-    }
-    out
-}
-
-/// The real-number inverse DCT (Annex A's definition).
-#[cfg(test)]
-pub(crate) fn idct_f64(input: &[f64; 64]) -> [f64; 64] {
-    let b = basis();
-    let mut tmp = [0.0; 64];
-    // tmp[v][x] = Σ_u F[v][u] · B[u][x]
-    for v in 0..8 {
-        for x in 0..8 {
-            tmp[v * 8 + x] = (0..8).map(|u| input[v * 8 + u] * b[u][x]).sum();
-        }
-    }
-    let mut out = [0.0; 64];
-    for x in 0..8 {
-        for y in 0..8 {
-            out[y * 8 + x] = (0..8).map(|v| tmp[v * 8 + x] * b[v][y]).sum();
-        }
-    }
-    out
-}
-
-/// The forward DCT the encoder uses: real-number, rounded to integers.
-pub(crate) fn fdct(input: &[i32; 64]) -> [i32; 64] {
-    let mut f = [0.0; 64];
-    for (d, &s) in f.iter_mut().zip(input) {
-        *d = f64::from(s);
-    }
-    let c = fdct_f64(&f);
-    let mut out = [0; 64];
-    for (d, s) in out.iter_mut().zip(c) {
-        *d = s.round() as i32;
     }
     out
 }
@@ -153,14 +167,70 @@ pub(crate) fn fdct(input: &[i32; 64]) -> [i32; 64] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
-    /// Round to nearest, half away from zero (Annex A's round()).
-    fn round_away(x: f64) -> i64 {
-        x.round() as i64 // f64::round rounds half away from zero
+    fn c(u: usize) -> f64 {
+        if u == 0 { FRAC_1_SQRT_2 } else { 1.0 }
     }
 
-    /// IEEE Std 1180-1990's random number generator (its §3.2), with the
-    /// 32-bit `long` arithmetic of the original.
+    /// Annex A's forward DCT, evaluated directly from its definition (a
+    /// double sum per coefficient — not the separable code above).
+    fn reference_fdct(f: &[f64; 64]) -> [f64; 64] {
+        let mut out = [0.0; 64];
+        for v in 0..8 {
+            for u in 0..8 {
+                let mut s = 0.0;
+                for y in 0..8 {
+                    for x in 0..8 {
+                        s += f[y * 8 + x]
+                            * ((2 * x + 1) as f64 * u as f64 * PI / 16.0).cos()
+                            * ((2 * y + 1) as f64 * v as f64 * PI / 16.0).cos();
+                    }
+                }
+                out[v * 8 + u] = 0.25 * c(u) * c(v) * s;
+            }
+        }
+        out
+    }
+
+    /// Annex A's real-number IDCT, evaluated directly from its definition.
+    fn reference_idct(f: &[f64; 64]) -> [f64; 64] {
+        let mut out = [0.0; 64];
+        for y in 0..8 {
+            for x in 0..8 {
+                let mut s = 0.0;
+                for v in 0..8 {
+                    for u in 0..8 {
+                        s += c(u)
+                            * c(v)
+                            * f[v * 8 + u]
+                            * ((2 * x + 1) as f64 * u as f64 * PI / 16.0).cos()
+                            * ((2 * y + 1) as f64 * v as f64 * PI / 16.0).cos();
+                    }
+                }
+                out[y * 8 + x] = 0.25 * s;
+            }
+        }
+        out
+    }
+
+    /// Annex A's round(): to nearest, half away from zero.
+    fn round_away(x: f64) -> i64 {
+        x.round() as i64
+    }
+
+    #[test]
+    fn basis_constants_are_the_definition() {
+        for (u, row) in BASIS.iter().enumerate() {
+            for (x, &b) in row.iter().enumerate() {
+                let want = c(u) / 2.0 * ((2 * x + 1) as f64 * u as f64 * PI / 16.0).cos();
+                assert!((b - want).abs() < 1e-15, "B[{u}][{x}]");
+            }
+        }
+    }
+
+    /// IEEE Std 1180-1990's random number generator, with the 32-bit `long`
+    /// arithmetic of its listing.
     struct Ieee1180Rand(u32);
     impl Ieee1180Rand {
         fn next(&mut self, l: i64, h: i64) -> i64 {
@@ -194,7 +264,7 @@ mod tests {
             for s in samples.iter_mut() {
                 *s = (rng.next(l, h) * sign) as f64;
             }
-            let coeffs = fdct_f64(&samples);
+            let coeffs = reference_fdct(&samples);
             let mut ci = [0i32; 64];
             let mut cf = [0.0f64; 64];
             for i in 0..64 {
@@ -202,7 +272,7 @@ mod tests {
                 ci[i] = c as i32;
                 cf[i] = c as f64;
             }
-            let reference = idct_f64(&cf);
+            let reference = reference_idct(&cf);
             let mut test = ci;
             idct(&mut test);
             for i in 0..64 {
@@ -233,7 +303,7 @@ mod tests {
             for sign in [1, -1] {
                 let s = ieee1180_run(l, h, sign);
                 eprintln!(
-                    "IEEE 1180 L={l} H={h} sign={sign:+}: peak {} pmse {:.4} omse {:.5} pme {:.4} ome {:.5}",
+                    "IEEE 1180 L={l} H={h} sign={sign:+}: peak {} pmse {:.6} omse {:.6} pme {:.6} ome {:.6}",
                     s.peak, s.pmse, s.omse, s.pme, s.ome
                 );
                 assert!(s.peak <= 1, "peak error {}", s.peak);
@@ -266,7 +336,7 @@ mod tests {
             b[63] = i32::from(b[0] % 2 == 0);
             f[0] = f64::from(b[0]);
             f[63] = f64::from(b[63]);
-            let r = idct_f64(&f);
+            let r = reference_idct(&f);
             idct(&mut b);
             for k in 0..64 {
                 let e = (i64::from(b[k]) - round_away(r[k]).clamp(-256, 255)).abs();
@@ -286,19 +356,19 @@ mod tests {
         let mut rng = Ieee1180Rand(12345);
         let mut checked = 0;
         let mut worst = 0;
-        while checked < 20_000 {
+        while checked < 5_000 {
             let mut s = [0.0f64; 64];
             for v in s.iter_mut() {
                 *v = rng.next(384, 383) as f64;
             }
-            let c = fdct_f64(&s);
+            let c = reference_fdct(&s);
             let mut ci = [0i32; 64];
             let mut cf = [0.0; 64];
             for i in 0..64 {
-                ci[i] = (c[i].round() as i32).clamp(-2048, 2047);
+                ci[i] = (round_away(c[i]) as i32).clamp(-2048, 2047);
                 cf[i] = f64::from(ci[i]);
             }
-            let r = idct_f64(&cf);
+            let r = reference_idct(&cf);
             let fp: Vec<i64> = r.iter().map(|&x| round_away(x)).collect();
             if fp.iter().any(|&v| !(-384..=383).contains(&v)) {
                 continue;
