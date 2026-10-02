@@ -203,6 +203,13 @@ impl Encoder {
         if frame.chroma != ChromaFormat::Yuv420 || frame.planes.len() != 3 {
             return Err(config("the encoder takes 4:2:0 frames"));
         }
+        let (cw, ch) = ChromaFormat::Yuv420.chroma_size(frame.width, frame.height);
+        for (i, p) in frame.planes.iter().enumerate() {
+            let want = if i == 0 { (frame.width, frame.height) } else { (cw, ch) };
+            if (p.width, p.height) != want || p.offset.checked_add(p.len()).is_none_or(|end| end > frame.data.len()) {
+                return Err(config(format!("plane {i} does not fit the frame's size or data")));
+            }
+        }
         let buf = self.pad(frame)?;
         let idx = self.frames_in;
         self.frames_in += 1;

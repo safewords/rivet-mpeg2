@@ -123,3 +123,51 @@ fn rate_control_tracks_the_target() {
         assert!(rate > f64::from(target) * 0.5 && rate < f64::from(target) * 1.6, "rate {rate}");
     }
 }
+
+#[test]
+fn bad_configurations_and_frames_are_refused() {
+    use mpeg2::{ChromaFormat, Encoder, Error, Frame};
+    for cfg in [
+        EncoderConfig::new(0, 16),
+        EncoderConfig::new(16, 3000),
+        EncoderConfig { frame_rate: (1, 1000), ..EncoderConfig::new(16, 16) },
+        EncoderConfig { rate_control: RateControl::ConstantQuantiser(0), ..EncoderConfig::new(16, 16) },
+        EncoderConfig { intra_dc_precision: 3, ..EncoderConfig::new(16, 16) },
+        EncoderConfig { gop_size: 0, ..EncoderConfig::new(16, 16) },
+    ] {
+        assert!(matches!(Encoder::new(cfg), Err(Error::Config(_))));
+    }
+    let mut enc = Encoder::new(EncoderConfig::new(32, 32)).unwrap();
+    assert!(matches!(enc.encode(&Frame::new(16, 16, ChromaFormat::Yuv420)), Err(Error::Config(_))));
+    assert!(matches!(enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv422)), Err(Error::Config(_))));
+    let mut broken = Frame::new(32, 32, ChromaFormat::Yuv420);
+    broken.data.truncate(100);
+    assert!(matches!(enc.encode(&broken), Err(Error::Config(_))));
+    assert!(enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv420)).is_ok());
+}
+
+#[test]
+fn sequence_info_describes_the_stream() {
+    let cfg = EncoderConfig {
+        frame_rate: (30000, 1001),
+        aspect_ratio_information: 3,
+        b_frames: 0,
+        ..EncoderConfig::new(40, 24)
+    };
+    let stream = encode(cfg, &[synthetic(40, 24, 0), synthetic(40, 24, 1)]);
+    let mut dec = mpeg2::Decoder::new();
+    let mut frames = dec.decode(&stream).unwrap();
+    frames.extend(dec.flush().unwrap());
+    let s = dec.sequence().unwrap();
+    assert_eq!((s.width, s.height, s.chroma), (40, 24, mpeg2::ChromaFormat::Yuv420));
+    assert_eq!(s.frame_rate, Some((30000, 1001)));
+    assert_eq!(s.aspect_ratio_information, 3);
+    assert_eq!(s.profile_and_level_indication, 0x48);
+    assert!(s.progressive_sequence && s.low_delay && !s.mpeg1);
+    assert_eq!(frames.len(), 2);
+    for (i, f) in frames.iter().enumerate() {
+        assert!(f.progressive_frame && !f.repeat_first_field && !f.field_pictures);
+        assert_eq!(f.decode_index, i as u64);
+        assert_eq!(f.temporal_reference, i as u16);
+    }
+}

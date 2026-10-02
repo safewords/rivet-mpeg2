@@ -12,6 +12,9 @@ use crate::tables::{DEFAULT_INTRA_MATRIX, DEFAULT_NON_INTRA_MATRIX, frame_rate_v
 use mc::PicBuf;
 use slice::Params;
 
+/// The largest picture the decoder allocates for, in luma samples.
+const MAX_SAMPLES: u64 = 4096 * 4096;
+
 /// What the active sequence header and extensions say about the stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequenceInfo {
@@ -228,7 +231,7 @@ impl Decoder {
             let ext_follows = code == EXTENSION && BitReader::new(body).peek(4) == EXT_SEQUENCE;
             if !ext_follows {
                 let h = self.pending_seq.take().expect("pending");
-                self.install_mpeg1(h);
+                self.install_mpeg1(h)?;
             }
         }
         if (SLICE_MIN..=SLICE_MAX).contains(&code) {
@@ -291,7 +294,7 @@ impl Decoder {
     }
 
     /// Activates an ISO/IEC 11172-2 sequence header.
-    fn install_mpeg1(&mut self, h: SequenceHeader) {
+    fn install_mpeg1(&mut self, h: SequenceHeader) -> Result<()> {
         let info = SequenceInfo {
             width: h.horizontal_size_value,
             height: h.vertical_size_value,
@@ -309,12 +312,25 @@ impl Decoder {
             video_format: None,
         };
         let qmat = Self::header_matrices(&h);
-        self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h });
+        self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h })
     }
 
     /// Makes `s` the active sequence, sizing it; a change of picture size or
     /// chroma format ends the previous sequence's pictures first.
-    fn install_sequence(&mut self, mut s: SeqState) {
+    fn install_sequence(&mut self, mut s: SeqState) -> Result<()> {
+        // The syntax reaches 16383 x 16383; High Level stops at 1920 x 1152.
+        // Anything beyond 4096 x 4096 is refused rather than allocated.
+        if u64::from(s.info.width) * u64::from(s.info.height) > MAX_SAMPLES {
+            // The previous sequence ends; this one's pictures are dropped
+            // (their slices find no sequence).
+            self.end_first_field();
+            self.output_newer();
+            self.older = None;
+            self.newer = None;
+            self.bufs.clear();
+            self.seq = None;
+            return Err(unsupported(format!("picture size {}x{}", s.info.width, s.info.height)));
+        }
         s.mb_width = s.info.width.div_ceil(16) as usize;
         s.mb_height = if s.info.progressive_sequence {
             s.info.height.div_ceil(16) as usize
@@ -338,6 +354,7 @@ impl Decoder {
             self.bufs.clear();
         }
         self.seq = Some(s);
+        Ok(())
     }
 
     fn extension(&mut self, id: u32, r: &mut BitReader) -> Result<()> {
@@ -378,7 +395,7 @@ impl Decoder {
                     colour_description: None,
                     video_format: None,
                 };
-                self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h });
+                self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h })?;
             }
             (EXT_SEQUENCE_DISPLAY, Level::Sequence) => {
                 let e = SequenceDisplayExtension::parse(r)?;
