@@ -1,0 +1,42 @@
+rivet-mpeg2 — an MPEG-2 video (ITU-T H.262) decoder and encoder
+Copyright 2026 Ely Erin Fox
+
+This product is licensed under the Open Encoding Attribution License,
+Version 1.0 (see LICENSE.md). It is source-available, not open source: the
+attribution duty in §5 applies to commercial use; §4 requires this NOTICE to
+be carried forward with any distribution.
+
+------------------------------------------------------------------------------
+Provenance
+------------------------------------------------------------------------------
+
+The decoder and encoder are original implementations written from ITU-T
+Recommendation H.262 (02/2000), identical to ISO/IEC 13818-2:2000, and, for
+the ISO/IEC 11172-2 (MPEG-1) points H.262 summarises in its Annex D.9,
+knowledge of that standard. They are not translations of, and do not derive
+from, any other MPEG-2 or MPEG-1 decoder's or encoder's source. The
+normative tables (the variable length codes of Annex B, the scans of
+Figures 7-2 and 7-3, the default quantiser matrices, Table 7-6) are
+reproduced from the Recommendation.
+
+The decoder is verified against the video conformance bitstreams of ISO/IEC
+13818-4:2004, which ISO publishes among its Publicly Available Standards,
+used as data: they are downloaded at test time (tools/fetch-conformance.sh)
+and not included. No other implementation was run to make or check test
+data.
+
+------------------------------------------------------------------------------
+Patents
+------------------------------------------------------------------------------
+
+MPEG-2 video has been subject to patent licensing in some jurisdictions; a
+licensing programme for it is administered by Via LA. This licence grants
+no rights under any patent, and the authors make no claim about whether a
+licence is needed for any use.
+
+------------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------------
+
+thiserror (https://crates.io/crates/thiserror) — MIT OR Apache-2.0
+proptest (https://crates.io/crates/proptest), development dependency only — MIT OR Apache-2.0

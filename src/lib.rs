@@ -5,15 +5,17 @@
 //! decodes too, by the differences H.262 Annex D.9 lists.
 //!
 //! - [`Decoder`] takes elementary-stream bytes in any chunking and returns
-//!   8-bit planar [`Frame`]s in display order, with the timing flags of each
-//!   picture (`top_field_first`, `repeat_first_field`, `progressive_frame`).
+//!   8-bit planar [`Frame`]s in display order, with each picture's timing
+//!   flags (`top_field_first`, `repeat_first_field`, `progressive_frame`).
 //!   Main Profile and the 4:2:2 profile: I, P and B pictures, frame and
 //!   field pictures, frame / field / dual-prime / 16×8 motion compensation,
 //!   both DCT coefficient tables, the alternate scan, both quantiser scales,
-//!   downloaded matrices, 4:2:0 and 4:2:2.
+//!   downloaded matrices, intra DC precision 8–11 bits, 4:2:0 and 4:2:2;
+//!   MPEG-1 streams including D-pictures. The scalable extensions and 4:4:4
+//!   are refused with [`Error::Unsupported`].
 //! - [`Encoder`] takes 4:2:0 frames and writes a Main Profile elementary
 //!   stream: progressive frame pictures, I, P and B, half-sample motion
-//!   search, a constant quantiser or a simple rate control.
+//!   search, a constant quantiser or a picture-level rate control.
 //!
 //! ```
 //! use mpeg2::{ChromaFormat, Decoder, Encoder, EncoderConfig, Frame};
@@ -31,13 +33,18 @@
 //! let mut frames = dec.decode(&stream)?;
 //! frames.extend(dec.flush()?);
 //! assert_eq!(frames.len(), 5);
+//! assert_eq!(frames[4].plane(0)[0], 80);
 //! # Ok::<(), mpeg2::Error>(())
 //! ```
 //!
-//! # Provenance
+//! # Provenance and verification
 //!
-//! Written from ITU-T Rec. H.262 (02/2000) alone; no other implementation's
-//! source was read. The tables are transcribed from the Recommendation.
+//! Written from ITU-T Rec. H.262 (02/2000); no other implementation's
+//! source was read. The tables are transcribed from the Recommendation and
+//! checked as complete prefix codes. The IDCT passes the IEEE 1180 test
+//! Annex A requires; the decoder decodes all 57 main- and 4:2:2-profile
+//! conformance bitstreams of ISO/IEC 13818-4 and matches, sample for sample,
+//! the reconstructions their traces carry. See the README for the figures.
 
 #![warn(missing_docs)]
 
