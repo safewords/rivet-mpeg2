@@ -107,3 +107,23 @@ fn recovers_after_garbage() {
     n += dec.flush().unwrap().len();
     assert_eq!(n, 6);
 }
+
+/// A damaged slice in the middle of a stream fed in one call: the call
+/// reports the error, and the frames before and after it still come out.
+#[test]
+fn an_error_mid_stream_loses_no_frames() {
+    let mut data = sample_stream().to_vec();
+    // Garbage in the first slice of the third picture.
+    let pics: Vec<usize> = data.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
+    let slice = pics[2] + data[pics[2]..].windows(4).position(|w| w == [0, 0, 1, 1]).unwrap();
+    for b in &mut data[slice + 5..slice + 12] {
+        *b = 0xff;
+    }
+    let mut dec = Decoder::new();
+    let first = dec.decode(&data);
+    assert!(first.is_err(), "the damaged slice is reported");
+    let mut n = 0;
+    n += dec.decode(&[]).expect("the rest decodes").len();
+    n += dec.flush().expect("flush").len();
+    assert_eq!(n, 6);
+}

@@ -175,46 +175,31 @@ impl Decoder {
     /// calls is completed by the next one) and returns the frames that are
     /// ready, in display order.
     ///
-    /// On an error the offending start-code unit is dropped and the error
-    /// returned; the decoder stays usable, frames already decoded are
-    /// returned by the next call, and decoding resumes at the next start
-    /// code.
+    /// On an error the start-code unit at fault (a header, or one slice) is
+    /// dropped and the error returned; the decoder stays usable. Frames
+    /// decoded before the error stay queued and come back from the next
+    /// call, and the units after it are decoded by the next call (to
+    /// `decode`, or to [`flush`](Self::flush)). A damaged slice leaves the
+    /// macroblocks it did not reach as they were in the picture buffer.
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Frame>> {
         self.input.extend_from_slice(data);
-        let mut pos = match find_start_code(&self.input, 0) {
-            Some(p) => p,
-            None => {
-                // Keep the last three bytes: they may begin a start code.
-                let keep = self.input.len().saturating_sub(3);
-                self.input.drain(..keep);
-                return Ok(std::mem::take(&mut self.out));
-            }
-        };
-        let mut result = Ok(());
-        while let Some(next) = find_start_code(&self.input, pos + 4) {
-            let code = self.input[pos + 3];
-            let body = self.input[pos + 4..next].to_vec();
-            pos = next;
-            if let Err(e) = self.unit(code, &body) {
-                result = Err(e);
-                break;
-            }
-        }
-        self.input.drain(..pos);
-        result?;
+        self.run_units(false)?;
         Ok(std::mem::take(&mut self.out))
     }
 
     /// Ends the stream: decodes what is buffered and returns the remaining
     /// frames in display order. The decoder is then ready for a new stream.
+    ///
+    /// Every buffered unit is decoded; if one fails, the first error is
+    /// returned and the frames stay queued for the next call.
     pub fn flush(&mut self) -> Result<Vec<Frame>> {
-        let mut result = Ok(());
-        if let Some(pos) = find_start_code(&self.input, 0) {
-            let code = self.input[pos + 3];
-            let body = self.input[pos + 4..].to_vec();
-            result = self.unit(code, &body);
-        }
+        let result = self.run_units(true);
         self.input.clear();
+        if let Some(h) = self.pending_seq.take() {
+            // A sequence header with nothing after it: activate it so
+            // sequence() describes it.
+            let _ = self.install_mpeg1(h);
+        }
         self.end_picture();
         self.end_first_field();
         self.output_newer();
@@ -222,6 +207,44 @@ impl Decoder {
         self.newer = None;
         result?;
         Ok(std::mem::take(&mut self.out))
+    }
+
+    /// Decodes the complete start-code units in the input (and, at the end
+    /// of the stream, the last one too). Mid-stream it stops at the first
+    /// error, leaving the units after it buffered.
+    fn run_units(&mut self, end_of_stream: bool) -> Result<()> {
+        let input = std::mem::take(&mut self.input);
+        let Some(mut pos) = find_start_code(&input, 0) else {
+            if !end_of_stream {
+                // Keep the last three bytes: they may begin a start code.
+                self.input = input[input.len().saturating_sub(3)..].to_vec();
+            }
+            return Ok(());
+        };
+        let mut first_error = None;
+        loop {
+            let next = find_start_code(&input, pos + 4);
+            let unit_end = match next {
+                Some(n) => n,
+                None if end_of_stream => input.len(),
+                None => break,
+            };
+            let result = self.unit(input[pos + 3], &input[pos + 4..unit_end]);
+            pos = unit_end;
+            if let Err(e) = result {
+                first_error.get_or_insert(e);
+                if !end_of_stream {
+                    break;
+                }
+            }
+            if next.is_none() {
+                break;
+            }
+        }
+        if !end_of_stream {
+            self.input = input[pos..].to_vec();
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn unit(&mut self, code: u8, body: &[u8]) -> Result<()> {
