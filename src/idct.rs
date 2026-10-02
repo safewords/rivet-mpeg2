@@ -173,18 +173,32 @@ mod tests {
         if u == 0 { FRAC_1_SQRT_2 } else { 1.0 }
     }
 
+    /// `COS[k][u]` = cos((2k+1)uπ/16), from the platform's cos (the
+    /// reference is independent of the literal basis).
+    fn cos_table() -> &'static [[f64; 8]; 8] {
+        static T: std::sync::OnceLock<[[f64; 8]; 8]> = std::sync::OnceLock::new();
+        T.get_or_init(|| {
+            let mut t = [[0.0; 8]; 8];
+            for (k, row) in t.iter_mut().enumerate() {
+                for (u, v) in row.iter_mut().enumerate() {
+                    *v = ((2 * k + 1) as f64 * u as f64 * PI / 16.0).cos();
+                }
+            }
+            t
+        })
+    }
+
     /// Annex A's forward DCT, evaluated directly from its definition (a
     /// double sum per coefficient — not the separable code above).
     fn reference_fdct(f: &[f64; 64]) -> [f64; 64] {
         let mut out = [0.0; 64];
         for v in 0..8 {
             for u in 0..8 {
+                let cs = cos_table();
                 let mut s = 0.0;
                 for y in 0..8 {
                     for x in 0..8 {
-                        s += f[y * 8 + x]
-                            * ((2 * x + 1) as f64 * u as f64 * PI / 16.0).cos()
-                            * ((2 * y + 1) as f64 * v as f64 * PI / 16.0).cos();
+                        s += f[y * 8 + x] * cs[x][u] * cs[y][v];
                     }
                 }
                 out[v * 8 + u] = 0.25 * c(u) * c(v) * s;
@@ -198,14 +212,11 @@ mod tests {
         let mut out = [0.0; 64];
         for y in 0..8 {
             for x in 0..8 {
+                let cs = cos_table();
                 let mut s = 0.0;
                 for v in 0..8 {
                     for u in 0..8 {
-                        s += c(u)
-                            * c(v)
-                            * f[v * 8 + u]
-                            * ((2 * x + 1) as f64 * u as f64 * PI / 16.0).cos()
-                            * ((2 * y + 1) as f64 * v as f64 * PI / 16.0).cos();
+                        s += c(u) * c(v) * f[v * 8 + u] * cs[x][u] * cs[y][v];
                     }
                 }
                 out[y * 8 + x] = 0.25 * s;
