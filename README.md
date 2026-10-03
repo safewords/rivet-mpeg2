@@ -1,6 +1,6 @@
 # rivet-mpeg2
 
-[![CI](https://github.com/rivet-transcoder/rivet-mpeg2/actions/workflows/ci.yml/badge.svg)](https://github.com/rivet-transcoder/rivet-mpeg2/actions/workflows/ci.yml)
+[![CI](https://github.com/safewords/rivet-mpeg2/actions/workflows/ci.yml/badge.svg)](https://github.com/safewords/rivet-mpeg2/actions/workflows/ci.yml)
 
 An **MPEG-2 Video** (ITU-T H.262 | ISO/IEC 13818-2) decoder and encoder in
 Rust: no C, no system libraries, no build script, nothing to install on a
@@ -10,7 +10,7 @@ conformance bitstream of ISO/IEC 13818-4, and reproduces sample for sample
 the reconstructions the suite publishes (the figures are
 [below](#how-it-is-checked)). MPEG-1 video (ISO/IEC 11172-2) decodes too.
 
-Written for the **[rivet](https://github.com/rivet-transcoder/rivet)**
+Written for the **[rivet](https://github.com/safewords/rivet)**
 transcoder, to be its MPEG-2 codec on both sides: the decoder for DVD,
 broadcast and archive sources on machines without a GPU that takes them,
 and the encoder for MPEG-2 output. Usable on its own by anything that has an
@@ -22,7 +22,7 @@ dependency (`thiserror`), no features, no build script.
 
 ```toml
 [dependencies]
-mpeg2 = { package = "rivet-mpeg2", git = "https://github.com/rivet-transcoder/rivet-mpeg2", branch = "develop" }
+mpeg2 = { package = "rivet-mpeg2", git = "https://github.com/safewords/rivet-mpeg2", branch = "develop" }
 ```
 
 ## What it decodes
