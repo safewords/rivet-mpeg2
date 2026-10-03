@@ -346,6 +346,8 @@ impl Decoder {
         if u64::from(s.info.width) * u64::from(s.info.height) > MAX_SAMPLES {
             // The previous sequence ends; this one's pictures are dropped
             // (their slices find no sequence).
+            self.end_picture();
+            self.pending_header = None;
             self.end_first_field();
             self.output_newer();
             self.older = None;
@@ -370,6 +372,11 @@ impl Decoder {
             None => true,
         };
         if changed {
+            // A sequence extension (which, unlike a sequence header, does
+            // not end the picture in unit()) may arrive while a picture's
+            // slices are open: that picture was decoded into the buffers
+            // about to go, under the old sizes, so it ends here first.
+            self.end_picture();
             self.end_first_field();
             self.output_newer();
             self.older = None;
@@ -473,6 +480,9 @@ impl Decoder {
         }
         let seq = self.seq.as_ref().ok_or_else(|| invalid("slice without a sequence header"))?;
         let cur = self.cur.as_ref().expect("picture open");
+        if cur.params.cur >= self.bufs.len() || cur.params.refs.iter().flatten().any(|&i| i >= self.bufs.len()) {
+            return Err(invalid("slice of a picture whose buffers are gone"));
+        }
         slice::decode_slice(&cur.params, &seq.qmat, &mut self.bufs, code, body)
     }
 
@@ -627,7 +637,12 @@ impl Decoder {
         let chroma = seq.info.chroma;
         let (cw, ch) = chroma.chroma_size(w as u32, h as u32);
         let (cw, ch) = (cw as usize, ch as usize);
-        let b = &self.bufs[buf];
+        // A buffer that is gone, or smaller than the sequence says (neither
+        // happens in a well-formed stream), outputs nothing.
+        let Some(b) = self.bufs.get(buf) else { return };
+        if b.width < w || b.cwidth < cw || b.planes[0].len() < b.width * h || b.planes[1].len() < b.cwidth * ch {
+            return;
+        }
         let mut data = Vec::with_capacity(w * h + 2 * cw * ch);
         for y in 0..h {
             data.extend_from_slice(&b.planes[0][y * b.width..y * b.width + w]);

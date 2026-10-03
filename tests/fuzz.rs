@@ -36,8 +36,30 @@ fn feed(data: &[u8], chunk: usize) -> usize {
     n
 }
 
+/// 256 cases unless PROPTEST_CASES says otherwise (e.g. 20000 for a long
+/// local run in release with overflow checks).
+fn config() -> ProptestConfig {
+    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    ProptestConfig { cases, ..ProptestConfig::default() }
+}
+
+/// A start-code value biased toward the ones that change decoder state:
+/// headers, extensions, the first and last slice codes.
+fn start_code_value() -> impl Strategy<Value = u8> {
+    prop_oneof![
+        Just(0x00u8),
+        Just(0xb3),
+        Just(0xb5),
+        Just(0xb7),
+        Just(0xb8),
+        Just(0x01),
+        Just(0xaf),
+        any::<u8>(),
+    ]
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(config())]
 
     #[test]
     fn arbitrary_bytes(data in proptest::collection::vec(any::<u8>(), 0..4096), chunk in 1usize..600) {
@@ -78,6 +100,30 @@ proptest! {
         }
         let at = garbage.len() % data.len().max(1);
         data.splice(at..at, garbage);
+        feed(&data, chunk);
+    }
+
+    /// Whole start-code units (a header, an extension, a slice) of random
+    /// content inserted anywhere in a valid stream, and units copied from
+    /// elsewhere in it: out-of-place headers and extensions mid-picture.
+    #[test]
+    fn spliced_units(units in proptest::collection::vec(
+                         (any::<usize>(), start_code_value(), proptest::collection::vec(any::<u8>(), 0..24)), 1..8),
+                     copies in proptest::collection::vec((any::<usize>(), any::<usize>(), 1usize..40), 0..4),
+                     chunk in 1usize..700) {
+        let mut data = sample_stream().to_vec();
+        for (at, code, body) in units {
+            let at = at % (data.len() + 1);
+            let mut u = vec![0, 0, 1, code];
+            u.extend(body);
+            data.splice(at..at, u);
+        }
+        for (from, to, len) in copies {
+            let from = from % data.len();
+            let piece = data[from..(from + len).min(data.len())].to_vec();
+            let to = to % (data.len() + 1);
+            data.splice(to..to, piece);
+        }
         feed(&data, chunk);
     }
 }
@@ -126,4 +172,56 @@ fn an_error_mid_stream_loses_no_frames() {
     n += dec.decode(&[]).expect("the rest decodes").len();
     n += dec.flush().expect("flush").len();
     assert_eq!(n, 6);
+}
+
+/// Applies `cut_and_spliced`'s edit to the sample stream.
+fn cut_and_splice(cuts: &[(usize, usize)], garbage: &[u8]) -> Vec<u8> {
+    let mut data = sample_stream().to_vec();
+    for &(a, b) in cuts {
+        if data.len() < 2 {
+            break;
+        }
+        let a = a % data.len();
+        let b = (a + b % 300).min(data.len());
+        data.drain(a..b);
+    }
+    let at = garbage.len() % data.len().max(1);
+    data.splice(at..at, garbage.iter().copied());
+    data
+}
+
+/// Regression: a proptest case from CI that panicked ("index out of bounds:
+/// the len is 0 but the index is 2").
+#[test]
+fn regression_cut_and_spliced_empty_index() {
+    let data = cut_and_splice(
+        &[(6376128340405003133, 14027746147085139091)],
+        &[58, 32, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    );
+    for chunk in [1, 2, 3, 7, 64, data.len()] {
+        feed(&data, chunk);
+    }
+}
+
+/// The root of the case above: a sequence extension that changes the picture
+/// size arriving between a picture's slices (unlike a sequence header, an
+/// extension does not end the picture). The open picture must end before
+/// the buffers it was decoded into are reallocated.
+#[test]
+fn a_size_change_mid_picture_does_not_panic() {
+    let s = sample_stream();
+    let seq_ext = s.windows(5).position(|w| w[..4] == [0, 0, 1, 0xb5] && w[4] >> 4 == 1).unwrap();
+    let mut ext = s[seq_ext..seq_ext + 10].to_vec();
+    ext[5] |= 0x01; // horizontal_size_extension's high bit: 8192 wider
+    let pics: Vec<usize> = s.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
+    for &p in &pics {
+        let slice = p + s[p..].windows(4).position(|w| w == [0, 0, 1, 1]).unwrap();
+        let after = slice + 4 + s[slice + 4..].windows(3).position(|w| w == [0, 0, 1]).unwrap();
+        let mut data = s[..after].to_vec();
+        data.extend(&ext);
+        data.extend(&s[after..]);
+        for chunk in [1, 13, data.len()] {
+            feed(&data, chunk);
+        }
+    }
 }
