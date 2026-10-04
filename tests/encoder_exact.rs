@@ -94,3 +94,12 @@ fn the_decoder_reconstructs_every_frame_as_the_encoder_did() {
         }
     }
 }
+
+/// The thread pools inside keep both types movable to and shareable
+/// between threads, as they were.
+#[test]
+fn decoder_and_encoder_are_send_and_sync() {
+    fn check<T: Send + Sync>() {}
+    check::<mpeg2::Decoder>();
+    check::<Encoder>();
+}

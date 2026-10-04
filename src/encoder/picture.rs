@@ -3,6 +3,7 @@
 //! pictures predict from.
 
 use super::motion;
+use crate::pool::Pool;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use crate::bits::BitWriter;
@@ -120,6 +121,7 @@ impl Wavefront {
 /// above it (a wavefront); every decision is the one a single thread would
 /// make, and each row's bits are written to its own writer and joined in
 /// order — the stream is the same, bit for bit, whatever the thread count.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn code_picture(
     s: &PictureSettings,
     src: &PicBuf,
@@ -128,6 +130,7 @@ pub(crate) fn code_picture(
     recon: Option<&mut PicBuf>,
     w: &mut BitWriter,
     threads: usize,
+    pool: Option<&Pool>,
 ) {
     let mb_width = src.width / 16;
     let mb_height = src.height / 16;
@@ -166,15 +169,9 @@ pub(crate) fn code_picture(
         }
     };
     let threads = threads.min(mb_height).max(1);
-    if threads == 1 {
-        work();
-    } else {
-        std::thread::scope(|sc| {
-            for _ in 1..threads {
-                sc.spawn(work);
-            }
-            work();
-        });
+    match pool {
+        Some(pool) if threads > 1 => pool.run(threads - 1, &work),
+        _ => work(),
     }
     for bits in rows.into_inner().expect("rows").into_iter().flatten() {
         w.append(bits);

@@ -59,7 +59,8 @@ pub struct EncoderConfig {
     /// intra_dc_precision: 0–2 (8 to 10 bits) in Main Profile.
     pub intra_dc_precision: u8,
     /// Threads coding a picture's macroblock rows (0: one per available
-    /// core). The stream is the same, bit for bit, for every setting.
+    /// core). They are started once, with the encoder, and kept. The stream
+    /// is the same, bit for bit, for every setting.
     pub threads: usize,
 }
 
@@ -129,6 +130,8 @@ pub struct Encoder {
     /// The reconstruction of every picture coded, by display index, when
     /// asked for (`keep_reconstructions`).
     recons: Option<Vec<(u64, PicBuf)>>,
+    /// The row threads (all but the caller's), kept between pictures.
+    pool: Option<crate::pool::Pool>,
 }
 
 impl Encoder {
@@ -193,6 +196,7 @@ impl Encoder {
             qcode,
             finished: false,
             recons: None,
+            pool: None,
         })
     }
 
@@ -431,7 +435,8 @@ impl Encoder {
             0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
             n => n,
         };
-        code_picture(&settings, src, fwd, bwd, recon, w, threads);
+        let pool = crate::pool::ensure(&mut self.pool, threads);
+        code_picture(&settings, src, fwd, bwd, recon, w, threads, pool);
         let bits = (w.bit_len() - start) as f64;
         if let Some(r) = &mut self.rate {
             let qs = f64::from(crate::tables::quantiser_scale(self.cfg.q_scale_type, qcode));

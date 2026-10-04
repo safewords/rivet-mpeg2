@@ -68,6 +68,7 @@ mod error;
 mod frame;
 pub(crate) mod headers;
 pub(crate) mod idct;
+mod pool;
 pub(crate) mod tables;
 pub(crate) mod vlc;
 

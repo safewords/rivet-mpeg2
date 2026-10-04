@@ -10,8 +10,12 @@ use crate::error::{Error, Result, invalid, unsupported};
 use crate::frame::{ChromaFormat, Frame, PictureType, Plane};
 use crate::headers::*;
 use crate::tables::{DEFAULT_INTRA_MATRIX, DEFAULT_NON_INTRA_MATRIX, frame_rate_value};
+use crate::pool::{self, Pool};
 use mc::PicBuf;
 use slice::Params;
+
+/// The most threads the automatic setting takes.
+const MAX_AUTO_THREADS: usize = 32;
 
 /// The largest picture the decoder allocates for, in luma samples.
 const MAX_SAMPLES: u64 = 4096 * 4096;
@@ -138,6 +142,11 @@ pub struct Decoder {
     /// A copy of the frame a second field is decoded into, which its
     /// predictions read the first field from.
     snapshot: Option<PicBuf>,
+    /// The slice threads (all but the caller's), kept between pictures.
+    pool: Option<Pool>,
+    /// Memory for the next frame output, its pages already touched (see
+    /// `decode_slices`).
+    spare: Option<Vec<u8>>,
 }
 
 struct SeqState {
@@ -183,12 +192,15 @@ impl Decoder {
             picture_error: None,
             writer: Vec::new(),
             snapshot: None,
+            pool: None,
+            spare: None,
         }
     }
 
-    /// Sets how many threads decode the slices of a picture: 0 (the
-    /// default) for one per available core, up to 8; 1 for none besides
-    /// the caller's. The decoded frames are the same for every setting, sample
+    /// Sets how many threads decode the slices of a picture and copy the
+    /// frames out: 0 (the default) for one per available core (up to 32),
+    /// 1 for none besides the caller's. The threads are started once and
+    /// kept. The decoded frames are the same for every setting, sample
     /// for sample, and so are the errors reported.
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = threads;
@@ -197,6 +209,14 @@ impl Decoder {
     /// The thread setting ([`set_threads`](Self::set_threads)).
     pub fn threads(&self) -> usize {
         self.threads
+    }
+
+    /// The threads the setting stands for.
+    fn thread_count(&self) -> usize {
+        match self.threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_AUTO_THREADS),
+            n => n,
+        }
     }
 
     /// The active sequence's parameters, once a sequence header has been
@@ -562,6 +582,8 @@ impl Decoder {
     fn decode_slices(&mut self, batch: &[(u8, usize, usize)], data: &[u8]) -> Result<()> {
         let (Some(seq), Some(cur)) = (&self.seq, &self.cur) else { return Ok(()) };
         let p = cur.params.clone();
+        let (cw, ch) = seq.info.chroma.chroma_size(seq.info.width, seq.info.height);
+        let seq_frame_len = (seq.info.width * seq.info.height + 2 * cw * ch) as usize;
         let qmat = seq.qmat;
         if p.cur >= self.bufs.len() || p.refs.iter().flatten().any(|&i| i >= self.bufs.len()) {
             return Err(invalid("slice of a picture whose buffers are gone"));
@@ -597,15 +619,14 @@ impl Decoder {
             cwidth: target.cwidth,
         };
 
-        // Automatic: a thread per core up to 8 (past that, the work outside
-        // the slices — copying frames out — bounds the speed and more threads
-        // only cost starting them), and not for pictures too small to repay
-        // starting one (a thread per 64 macroblocks at most).
+        // No more threads than 64 macroblocks each repay, unless set.
         let threads = match self.threads {
-            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8).min((mb_count / 64).max(1)),
+            0 => self.thread_count().min((mb_count / 64).max(1)),
             n => n,
         };
         let workers = threads.min(batch.len()).max(1);
+        let all = self.thread_count();
+        let pool = pool::ensure(&mut self.pool, all);
         // Contiguous runs of slices of about equal size — a few per thread,
         // taken by whichever thread is free, which evens out the work — and
         // the macroblock rows each owns: from its first slice's row.
@@ -641,8 +662,23 @@ impl Decoder {
         let bands = band::split(&mut target, &mut self.writer, layout, &bounds);
         // The runs in stream order, the first on top.
         let jobs = std::sync::Mutex::new(chunks.into_iter().zip(bands).rev().collect::<Vec<_>>());
+        // Every picture is output once, into new memory; the first writes to
+        // new memory are slow and do not get faster on more threads (the
+        // operating system handles them one at a time), so one thread
+        // touches the next output's pages while the others decode slices.
+        let frame_len = seq_frame_len;
+        let spare = std::sync::Mutex::new(self.spare.take().filter(|v| v.len() == frame_len));
+        let prefault = std::sync::atomic::AtomicBool::new(spare.lock().expect("spare").is_some() || frame_len == 0);
         let work = || -> (Vec<(usize, Error)>, Vec<band::Held>) {
             let (mut errors, mut held) = (Vec::new(), Vec::new());
+            if !prefault.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let mut v = vec![0u8; frame_len];
+                // Any write maps a page; output() overwrites every byte.
+                for i in (0..frame_len).step_by(4096) {
+                    v[i] = 1;
+                }
+                *spare.lock().expect("spare") = Some(v);
+            }
             loop {
                 let job = jobs.lock().expect("slice jobs").pop();
                 let Some((chunk, mut band)) = job else { break };
@@ -657,21 +693,21 @@ impl Decoder {
             }
             (errors, held)
         };
-        let (mut errors, mut held) = if workers == 1 {
-            work()
-        } else {
-            std::thread::scope(|sc| {
-                let handles: Vec<_> = (1..workers).map(|_| sc.spawn(work)).collect();
-                let (mut errors, mut held) = work();
-                for h in handles {
-                    let (e, b) = h.join().expect("slice thread");
-                    errors.extend(e);
-                    held.extend(b);
-                }
-                (errors, held)
-            })
+        let (mut errors, mut held) = match pool {
+            Some(pool) if workers > 1 => {
+                let results = std::sync::Mutex::new((Vec::new(), Vec::new()));
+                pool.run(workers - 1, &|| {
+                    let (e, h) = work();
+                    let mut r = results.lock().expect("slice results");
+                    r.0.extend(e);
+                    r.1.extend(h);
+                });
+                results.into_inner().expect("slice results")
+            }
+            _ => work(),
         };
         drop(jobs);
+        self.spare = spare.into_inner().expect("spare");
         if !held.is_empty() {
             // Macroblocks written outside their thread's band, in stream
             // order; each lands unless a later slice wrote it.
@@ -849,14 +885,43 @@ impl Decoder {
         if b.width < w || b.cwidth < cw || b.planes[0].len() < b.width * h || b.planes[1].len() < b.cwidth * ch {
             return;
         }
-        let mut data = Vec::with_capacity(w * h + 2 * cw * ch);
-        for y in 0..h {
-            data.extend_from_slice(&b.planes[0][y * b.width..y * b.width + w]);
-        }
-        for c in 1..3 {
-            for y in 0..ch {
-                data.extend_from_slice(&b.planes[c][y * b.cwidth..y * b.cwidth + cw]);
+        let len = w * h + 2 * cw * ch;
+        let mut data = self.spare.take().filter(|v| v.len() == len).unwrap_or_else(|| vec![0u8; len]);
+        // The cropped copy, in bands of rows shared out to the slice threads:
+        // a large frame is mostly the cost of first writes to new memory.
+        let all = self.thread_count();
+        let threads = all.min((w * h) >> 16).max(1);
+        let pool = pool::ensure(&mut self.pool, all);
+        let Some(b) = self.bufs.get(buf) else { return };
+        let (dy, dc) = data.split_at_mut(w * h);
+        let (du, dv) = dc.split_at_mut(cw * ch);
+        let mut jobs = Vec::new();
+        for (dst, src, pw, stride, rows) in
+            [(dy, &b.planes[0], w, b.width, h), (du, &b.planes[1], cw, b.cwidth, ch), (dv, &b.planes[2], cw, b.cwidth, ch)]
+        {
+            let per = rows.div_ceil(2 * threads).max(1);
+            for (k, d) in dst.chunks_mut(per * pw).enumerate() {
+                jobs.push((d, &src[k * per * stride..], pw, stride));
             }
+        }
+        let copy = |(d, src, pw, stride): (&mut [u8], &[u8], usize, usize)| {
+            for (y, row) in d.chunks_exact_mut(pw).enumerate() {
+                row.copy_from_slice(&src[y * stride..y * stride + pw]);
+            }
+        };
+        match pool {
+            Some(pool) if threads > 1 => {
+                let jobs = std::sync::Mutex::new(jobs);
+                pool.run(threads - 1, &|| {
+                    loop {
+                        // The lock is released at the end of the statement.
+                        let next = jobs.lock().expect("copy jobs").pop();
+                        let Some(j) = next else { break };
+                        copy(j);
+                    }
+                });
+            }
+            _ => jobs.into_iter().for_each(copy),
         }
         let planes = vec![
             Plane { offset: 0, width: w as u32, height: h as u32 },
