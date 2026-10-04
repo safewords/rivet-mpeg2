@@ -2,7 +2,7 @@
 //! and the code it replaced ("original", copied below as it was), in
 //! nanoseconds per call — the fastest of many repetitions.
 //!
-//! `cargo run --release --example kernels`
+//! `cargo run --release --example mpeg2_kernels`
 
 use std::hint::black_box;
 use std::time::Instant;

@@ -88,7 +88,7 @@ pub fn simd_rung() -> &'static str {
     dsp::active_rung()
 }
 
-/// Kernel entry points for `examples/kernels.rs` (the per-kernel
+/// Kernel entry points for `examples/mpeg2_kernels.rs` (the per-kernel
 /// benchmark). Not part of the API.
 #[doc(hidden)]
 pub mod __bench {

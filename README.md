@@ -216,7 +216,7 @@ operating system serves one page at a time however many threads write
 them; one of the slice threads touches the next frame's memory while the
 others decode, and the copy itself is shared out. The default for both is
 a thread per core (the decoder's at most 32). Per kernel, nanoseconds per call
-(`examples/kernels.rs`; "original" is the code each kernel replaced):
+(`examples/mpeg2_kernels.rs`; "original" is the code each kernel replaced):
 
 | kernel | original | scalar | SSE2 | AVX2 | AVX-512 |
 |---|---|---|---|---|---|

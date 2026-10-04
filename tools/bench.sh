@@ -9,7 +9,7 @@
 # bilinearly: 60 frames at quantiser_scale_code 4 with two B-pictures
 # between references (the encoder's defaults). Each figure is the fastest
 # of several runs. To compare with an older commit, build its
-# examples/bench.rs (and run the same commands) — the clips must be the
+# examples/mpeg2_bench.rs (and run the same commands) — the clips must be the
 # same files.
 set -euo pipefail
 
@@ -20,7 +20,7 @@ src="$conf/main-profile/tcela/tcela-7-slices/tcela-7.bits"
 [ -s "$src" ] || tools/fetch-conformance.sh "$conf"
 mkdir -p "$work"
 
-cargo build --release --example bench --example kernels
+cargo build --release --example mpeg2_bench --example mpeg2_kernels
 bin="${CARGO_TARGET_DIR:-target}/release/examples"
 
 "$bin/kernels"

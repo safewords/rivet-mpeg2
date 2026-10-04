@@ -4,10 +4,10 @@
 //!
 //! ```text
 //! # decode a stream `reps` times on `threads` threads (0: one per core)
-//! cargo run --release --example bench -- dec <stream.m2v> <reps> [threads]
+//! cargo run --release --example mpeg2_bench -- dec <stream.m2v> <reps> [threads]
 //! # encode `frames` frames of <src.m2v>, decoded and scaled (bilinear) to
 //! # w x h, `reps` times; with an output path, write the stream there
-//! cargo run --release --example bench -- enc <src.m2v> <w> <h> <frames> <reps> [threads] [out.m2v]
+//! cargo run --release --example mpeg2_bench -- enc <src.m2v> <w> <h> <frames> <reps> [threads] [out.m2v]
 //! ```
 //!
 //! The source used for the README's figures is tcela-7 of the conformance

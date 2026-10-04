@@ -54,7 +54,7 @@ jobs:
       - name: Property tests with overflow checks (debug)
         run: cargo test --test fuzz
       - name: Kernel timings (informational)
-        run: cargo run --release --example kernels
+        run: cargo run --release --example mpeg2_kernels
 
   # The ISO/IEC 13818-4 conformance bitstreams are not committed: ISO
   # publishes them, tools/fetch-conformance.sh downloads them, and this job
