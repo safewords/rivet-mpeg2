@@ -51,7 +51,15 @@ colour description.
 A damaged slice is an error from `decode`, and the macroblocks it did not
 reach keep what the picture buffer held; the frames before and after it are
 not lost, and decoding resumes at the next start code. There is no error
-concealment beyond that.
+concealment beyond that. (A picture's slices are decoded when the picture
+ends — at the next unit that is not a slice — so a damaged slice's error
+comes back with that unit.)
+
+The slices of a picture are decoded on several threads at once
+(`Decoder::set_threads`; by default one per core, fewer for small
+pictures). The frames are the same, sample for sample, on any number of
+threads — even for damaged streams whose slices overlap or arrive out of
+order — and so are the errors; see [Speed](#speed).
 
 ## What it encodes
 
@@ -66,6 +74,10 @@ default quantiser matrices. The quantiser is constant
 (`RateControl::Bitrate`, the Test Model 5 bit allocation, without a VBV
 model: the stream signals variable bit rate). `intra_vlc_format`,
 `alternate_scan`, `q_scale_type` and `intra_dc_precision` are settable.
+The rows of a picture are coded on several threads at once
+(`EncoderConfig::threads`, by default one per core), each a little behind
+the row above, whose vectors its search starts from; the stream is the
+same, bit for bit, on any number of threads.
 
 Not implemented in the encoder: interlaced coding (field pictures, field
 prediction, dual-prime, field DCT), 4:2:2, custom matrices, per-macroblock
@@ -102,7 +114,24 @@ is used.
   a direct evaluation of Annex A's definition — and Annex A's items 3 and 4.
   The decoder's IDCT is the separable real-number IDCT in double precision
   with the basis as literal constants (the same output on every platform);
-  every statistic is **zero**: peak error 0, mean square error 0.
+  every statistic is **zero**: peak error 0, mean square error 0. The SIMD
+  versions perform the same double-precision operations in the same order
+  (no fused multiply-add), several columns at a time, so they return the
+  very same integers: the IEEE 1180 run is repeated on every SIMD rung the
+  machine has, and each rung's IDCT and FDCT are compared with the original
+  scalar code on 30 000 blocks and every DC-only block.
+- **Recorded output.** Every frame of every conformance stream is hashed
+  and compared with the output of the original scalar, single-threaded
+  decoder — decoded on 1, 2, 3 and 8 threads, with the SIMD kernels and
+  with `MPEG2_FORCE_SCALAR=1` (CI, x86-64 and arm64). The encoder's stream
+  for seven configurations (B-pictures, every coding tool, odd sizes, the
+  extreme quantisers, the rate control) is compared, bit for bit, with the
+  original encoder's on 1, 3 and 8 threads, and the decoder must reproduce
+  every frame the encoder reconstructed — B-pictures included — sample for
+  sample (`tests/encoder_exact.rs`).
+- **The kernels** (`src/dsp/`): each SIMD rung against the scalar code on
+  random and extreme inputs — motion compensation in every half-sample
+  mode, averaging, residual addition, saturation, SAD.
 - **Tables.** Every VLC table is checked as a prefix code whose Kraft sum
   leaves exactly the codewords the Recommendation leaves unused; every
   run/level pair round-trips through Tables B.14 and B.15; the motion_code
@@ -116,7 +145,8 @@ is used.
 - **Malformed input** (`tests/fuzz.rs`, proptest): arbitrary bytes, and
   valid streams with bits flipped, bytes cut and garbage spliced, in
   arbitrary chunkings — errors, never a panic; run in debug in CI so
-  overflow traps.
+  overflow traps. The same damaged streams decode to the same frames and
+  the same errors on 1, 2, 3 and 8 threads.
 
 The encoder on natural pictures: the first 30 frames of tcela-7 (Mobile &
 Calendar, 720 × 480, 29.97 Hz — a hard sequence), as decoded, re-encoded
@@ -132,9 +162,59 @@ and decoded again; luma PSNR against the re-encoder's input:
 | target 4 Mb/s | 0 | 4.8 Mb/s | 30.0 dB | 34.3 dB |
 
 The rate control overshoots its target by 10–20 % over these 30 frames.
-On one core of the machine these were measured on, the decoder runs at
-about 400 frames/s at 704 × 480 (Tek-5-long, 150 frames) and the encoder
-at 45–65 frames/s at 720 × 480. Measured 2026-10-02.
+Measured 2026-10-02.
+
+## Speed
+
+The sample processing runs on SIMD kernels chosen at run time
+(`src/dsp/`): SSE2 (every x86-64 processor), AVX2 and AVX-512F for the
+transforms, NEON on AArch64; `mpeg2::simd_rung()` names the one in use and
+`MPEG2_FORCE_SCALAR=1` forces the scalar code. Every rung returns exactly
+what the scalar code returns — the IDCT and FDCT too: they perform the
+same double-precision operations in the same order, several columns at a
+time (no fused multiply-add), skipping only rows of zeros, whose
+contribution is exactly nothing. Output does not depend on the processor.
+On top of that, a picture's slices decode on several threads and a
+picture's rows encode on several (a wavefront), neither changing a sample
+or a bit.
+
+Ryzen 9 9950X (16 cores), Windows, measured 2026-10-04 alongside other
+work on the machine, fastest of several interleaved runs. The clips are
+this encoder's (tcela-7, Mobile & Calendar, scaled to the size; 60 frames
+at quantiser_scale_code 4, two B-pictures between references: about 23
+and 40 Mb/s); "before" is the commit before the SIMD kernels, single
+threaded.
+
+| frames/s | before | 1 thread | 1 thread, scalar | 8 threads | 16 threads |
+|---|---|---|---|---|---|
+| decode 1280 × 720 | 165 | 422 | 213 | 1232 | 1048 |
+| decode 1920 × 1080 | 75 | 188 | 95 | 708 | 705 |
+| decode 704 × 480, Tek-5-long (field pictures) | 441 | 859 | — | 1786 (default) | — |
+| encode 1280 × 720 | 23.0 | 57.7 | 27.3 | 304 | 366 |
+| encode 1920 × 1080 | 9.5 | 26.9 | 11.7 | 143 | 188 |
+
+The decoder's default is a thread per core up to 8 (beyond that, copying
+each frame out bounds it); the encoder's, a thread per core (208 frames/s
+at 1080p on all 32 hardware threads). Per kernel, nanoseconds per call
+(`examples/kernels.rs`; "original" is the code each kernel replaced):
+
+| kernel | original | scalar | SSE2 | AVX2 | AVX-512 |
+|---|---|---|---|---|---|
+| IDCT 8×8, few coefficients | 164 | 107 | 83 | 47 | 37 |
+| IDCT 8×8, all 64 | 170 | 140 | 128 | 65 | 46 |
+| FDCT 8×8 | 138 | 127 | 118 | 54 | 31 |
+| MC 16×16, whole-sample | 66 | 67 | 7.6 | 7.6 | 7.5 |
+| MC 16×16, half-sample both ways | 200 | 232 | 19.2 | 19.2 | 19.2 |
+| MC 16×16, half-sample, averaged (B) | 225 | 204 | 10.0 | 10.0 | 10.1 |
+| MC 8×8, half-sample both ways | 52 | 69 | 8.5 | 8.5 | 8.5 |
+| residual add 8×8 | 3.5 | 4.1 | 2.7 | 2.7 | 2.7 |
+| SAD 16×16 | 8.6 | 9.5 | 5.5 | 5.2 | 5.2 |
+
+The encoder's motion search also stops a candidate's SAD after 8 rows
+once they alone exceed the best so far, and its quantiser divides by
+multiplying with an exact reciprocal. To reproduce: `tools/bench.sh`
+(fetches the conformance suite if needed, makes the clips, runs both
+examples).
 
 ## Provenance and licensing
 

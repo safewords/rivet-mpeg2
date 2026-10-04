@@ -16,26 +16,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The SIMD kernels are checked against the scalar code on every
+        # host (AVX2 / AVX-512 / SSE2 on x86-64, NEON on arm64), and the
+        # whole suite runs again on the scalar code. MPEG2_REQUIRE_SIMD makes
+        # a host without the expected rung (AVX2, NEON) a failure, not a
+        # silent comparison of the scalar code with itself.
         include:
           - { name: linux x86-64,   os: ubuntu-latest }
           - { name: linux arm64,    os: ubuntu-24.04-arm }
           - { name: windows x86-64, os: windows-latest }
           - { name: macos arm64,    os: macos-latest }
+          - { name: macos-14 arm64, os: macos-14 }
+    env:
+      MPEG2_REQUIRE_SIMD: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Tests
+      - name: Tests (SIMD kernels)
         run: cargo test --release
+      - name: Tests (scalar kernels)
+        run: cargo test --release
+        env:
+          MPEG2_FORCE_SCALAR: "1"
       - name: Property tests with overflow checks (debug)
         run: cargo test --test fuzz
+      - name: Kernel timings (informational)
+        run: cargo run --release --example kernels
 
   # The ISO/IEC 13818-4 conformance bitstreams are not committed: ISO
   # publishes them, tools/fetch-conformance.sh downloads them, and this job
   # fails (rather than skips) if they are missing.
   conformance:
-    name: ISO/IEC 13818-4 conformance bitstreams
-    runs-on: ubuntu-latest
+    name: ISO/IEC 13818-4 conformance bitstreams (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: x86-64, os: ubuntu-latest }
+          - { name: arm64 NEON, os: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,11 +65,23 @@ jobs:
           path: target/conformance
           key: mpeg2-conformance-${{ hashFiles('tools/fetch-conformance.sh') }}
       - run: tools/fetch-conformance.sh target/conformance
-      - name: Conformance
+      # Every frame of every stream is hashed and compared with the recorded
+      # output, decoded on 1, 2, 3 and 8 threads: with the SIMD kernels, then
+      # with the scalar ones.
+      - name: Conformance (SIMD kernels)
         run: cargo test --release --test conformance -- --nocapture
         env:
           MPEG2_CONFORMANCE_DIR: target/conformance
           MPEG2_REQUIRE_CONFORMANCE: "1"
+          MPEG2_REQUIRE_SIMD: "1"
+          MPEG2_TEST_THREADS: "1,2,3,8"
+      - name: Conformance (scalar kernels)
+        run: cargo test --release --test conformance -- --nocapture
+        env:
+          MPEG2_CONFORMANCE_DIR: target/conformance
+          MPEG2_REQUIRE_CONFORMANCE: "1"
+          MPEG2_FORCE_SCALAR: "1"
+          MPEG2_TEST_THREADS: "1,4"
 
   msrv:
     name: MSRV (1.99)
