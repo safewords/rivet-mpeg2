@@ -1,11 +1,12 @@
 //! The decoder: start-code parsing, the headers, picture management and
 //! output in display order.
 
+pub(crate) mod band;
 pub(crate) mod mc;
 pub(crate) mod slice;
 
 use crate::bits::BitReader;
-use crate::error::{Result, invalid, unsupported};
+use crate::error::{Error, Result, invalid, unsupported};
 use crate::frame::{ChromaFormat, Frame, PictureType, Plane};
 use crate::headers::*;
 use crate::tables::{DEFAULT_INTRA_MATRIX, DEFAULT_NON_INTRA_MATRIX, frame_rate_value};
@@ -123,6 +124,20 @@ pub struct Decoder {
     broken_link: bool,
     decode_index: u64,
     out: Vec<Frame>,
+    /// Threads for slice decoding (0: one per core).
+    threads: usize,
+    /// The current picture's slices not decoded yet: (start code value,
+    /// range of `batch_data`).
+    batch: Vec<(u8, usize, usize)>,
+    batch_data: Vec<u8>,
+    /// The first error of a picture's slices, reported with the unit that
+    /// ended the picture.
+    picture_error: Option<Error>,
+    /// Which slice last wrote each macroblock of the picture (see band.rs).
+    writer: Vec<u32>,
+    /// A copy of the frame a second field is decoded into, which its
+    /// predictions read the first field from.
+    snapshot: Option<PicBuf>,
 }
 
 struct SeqState {
@@ -162,7 +177,26 @@ impl Decoder {
             broken_link: false,
             decode_index: 0,
             out: Vec::new(),
+            threads: 0,
+            batch: Vec::new(),
+            batch_data: Vec::new(),
+            picture_error: None,
+            writer: Vec::new(),
+            snapshot: None,
         }
+    }
+
+    /// Sets how many threads decode the slices of a picture: 0 (the
+    /// default) for one per available core, up to 8; 1 for none besides
+    /// the caller's. The decoded frames are the same for every setting, sample
+    /// for sample, and so are the errors reported.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
+    }
+
+    /// The thread setting ([`set_threads`](Self::set_threads)).
+    pub fn threads(&self) -> usize {
+        self.threads
     }
 
     /// The active sequence's parameters, once a sequence header has been
@@ -205,6 +239,10 @@ impl Decoder {
         self.output_newer();
         self.older = None;
         self.newer = None;
+        let result = match (result, self.picture_error.take()) {
+            (Err(e), _) | (Ok(()), Some(e)) => Err(e),
+            (Ok(()), None) => Ok(()),
+        };
         result?;
         Ok(std::mem::take(&mut self.out))
     }
@@ -230,6 +268,12 @@ impl Decoder {
                 None => break,
             };
             let result = self.unit(input[pos + 3], &input[pos + 4..unit_end]);
+            // The slices of a picture are decoded when it ends: their error
+            // comes with the unit that ended it (which was decoded too).
+            let result = match self.picture_error.take() {
+                Some(e) => Err(e),
+                None => result,
+            };
             pos = unit_end;
             if let Err(e) = result {
                 first_error.get_or_insert(e);
@@ -265,6 +309,10 @@ impl Decoder {
         // not: no picture is open then).
         if code != EXTENSION && code != USER_DATA {
             self.end_picture();
+        } else if code == EXTENSION {
+            // An extension between slices (a damaged stream) may change what
+            // the slices after it decode with; those before it decode now.
+            self.decode_batch();
         }
         let mut r = BitReader::new(body);
         match code {
@@ -478,12 +526,169 @@ impl Decoder {
                 return Ok(());
             }
         }
-        let seq = self.seq.as_ref().ok_or_else(|| invalid("slice without a sequence header"))?;
+        if self.seq.is_none() {
+            return Err(invalid("slice without a sequence header"));
+        }
         let cur = self.cur.as_ref().expect("picture open");
         if cur.params.cur >= self.bufs.len() || cur.params.refs.iter().flatten().any(|&i| i >= self.bufs.len()) {
             return Err(invalid("slice of a picture whose buffers are gone"));
         }
-        slice::decode_slice(&cur.params, &seq.qmat, &mut self.bufs, code, body)
+        let start = self.batch_data.len();
+        self.batch_data.extend_from_slice(body);
+        self.batch.push((code, start, self.batch_data.len()));
+        Ok(())
+    }
+
+    /// Decodes the slices collected for the current picture, on up to
+    /// `threads` threads; their first error (in stream order) is kept in
+    /// `picture_error`.
+    fn decode_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.batch);
+        let data = std::mem::take(&mut self.batch_data);
+        let result = self.decode_slices(&batch, &data);
+        // Keep the allocations for the next picture.
+        self.batch = batch;
+        self.batch.clear();
+        self.batch_data = data;
+        self.batch_data.clear();
+        if let Err(e) = result {
+            self.picture_error.get_or_insert(e);
+        }
+    }
+
+    fn decode_slices(&mut self, batch: &[(u8, usize, usize)], data: &[u8]) -> Result<()> {
+        let (Some(seq), Some(cur)) = (&self.seq, &self.cur) else { return Ok(()) };
+        let p = cur.params.clone();
+        let qmat = seq.qmat;
+        if p.cur >= self.bufs.len() || p.refs.iter().flatten().any(|&i| i >= self.bufs.len()) {
+            return Err(invalid("slice of a picture whose buffers are gone"));
+        }
+        // Does any prediction read the frame being decoded? A P second field
+        // reads its first field; a missing reference falls back to it.
+        let predicts = matches!(p.picture_type, 2 | 3);
+        let needs_cur = (p.picture_type == 2 && p.second_field)
+            || (predicts && p.refs[0].is_none())
+            || (p.picture_type == 3 && p.refs[1].is_none());
+        let mut snapshot = self.snapshot.take();
+        if needs_cur {
+            let src = &self.bufs[p.cur];
+            match &mut snapshot {
+                Some(s) if s.planes.iter().zip(&src.planes).all(|(a, b)| a.len() == b.len()) => {
+                    for (a, b) in s.planes.iter_mut().zip(&src.planes) {
+                        a.copy_from_slice(b);
+                    }
+                }
+                _ => snapshot = Some(src.clone()),
+            }
+        }
+        let mut target = std::mem::replace(&mut self.bufs[p.cur], PicBuf::empty());
+        let mb_count = p.mb_width * p.mb_height;
+        self.writer.clear();
+        self.writer.resize(mb_count, 0);
+        let layout = band::Layout {
+            mb_width: p.mb_width,
+            frame: p.picture_structure == FRAME_PICTURE,
+            parity: usize::from(p.picture_structure == BOTTOM_FIELD),
+            chroma: p.chroma,
+            width: target.width,
+            cwidth: target.cwidth,
+        };
+
+        // Automatic: a thread per core up to 8 (past that, the work outside
+        // the slices — copying frames out — bounds the speed and more threads
+        // only cost starting them), and not for pictures too small to repay
+        // starting one (a thread per 64 macroblocks at most).
+        let threads = match self.threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8).min((mb_count / 64).max(1)),
+            n => n,
+        };
+        let workers = threads.min(batch.len()).max(1);
+        // Contiguous runs of slices of about equal size — a few per thread,
+        // taken by whichever thread is free, which evens out the work — and
+        // the macroblock rows each owns: from its first slice's row.
+        let pieces = if workers == 1 { 1 } else { batch.len().min(workers * 4) };
+        let total: usize = batch.iter().map(|s| s.2 - s.1).sum();
+        let mut chunks: Vec<std::ops::Range<usize>> = Vec::with_capacity(pieces);
+        let mut start = 0;
+        let mut acc = 0;
+        for (i, s) in batch.iter().enumerate() {
+            acc += s.2 - s.1;
+            // Close run k (1-based) at its share of the bytes, or when every
+            // slice left must start a run of its own.
+            let k = chunks.len() + 1;
+            let (left, need) = (batch.len() - (i + 1), pieces - k.min(pieces));
+            if k < pieces && left >= need && (acc * pieces >= total * k || left == need) {
+                chunks.push(start..i + 1);
+                start = i + 1;
+            }
+        }
+        chunks.push(start..batch.len());
+        let mut bounds = vec![0usize];
+        for c in &chunks[1..] {
+            let (code, a, _) = batch[c.start];
+            let row = slice::slice_row(&p, code, &data[a..]).min(p.mb_height);
+            bounds.push(row.max(*bounds.last().expect("bound")));
+        }
+        bounds.push(p.mb_height);
+
+        let refs = band::Refs {
+            dir: [p.refs[0].map(|i| &self.bufs[i]), p.refs[1].map(|i| &self.bufs[i])],
+            cur: if needs_cur { snapshot.as_ref() } else { None },
+        };
+        let bands = band::split(&mut target, &mut self.writer, layout, &bounds);
+        // The runs in stream order, the first on top.
+        let jobs = std::sync::Mutex::new(chunks.into_iter().zip(bands).rev().collect::<Vec<_>>());
+        let work = || -> (Vec<(usize, Error)>, Vec<band::Held>) {
+            let (mut errors, mut held) = (Vec::new(), Vec::new());
+            loop {
+                let job = jobs.lock().expect("slice jobs").pop();
+                let Some((chunk, mut band)) = job else { break };
+                for i in chunk {
+                    let (code, a, b) = batch[i];
+                    band.slice = i as u32 + 1;
+                    if let Err(e) = slice::decode_slice(&p, &qmat, &refs, &mut band, code, &data[a..b]) {
+                        errors.push((i, e));
+                    }
+                }
+                held.append(&mut band.held);
+            }
+            (errors, held)
+        };
+        let (mut errors, mut held) = if workers == 1 {
+            work()
+        } else {
+            std::thread::scope(|sc| {
+                let handles: Vec<_> = (1..workers).map(|_| sc.spawn(work)).collect();
+                let (mut errors, mut held) = work();
+                for h in handles {
+                    let (e, b) = h.join().expect("slice thread");
+                    errors.extend(e);
+                    held.extend(b);
+                }
+                (errors, held)
+            })
+        };
+        drop(jobs);
+        if !held.is_empty() {
+            // Macroblocks written outside their thread's band, in stream
+            // order; each lands unless a later slice wrote it.
+            held.sort_by_key(|h| h.0);
+            let mut whole = band::split(&mut target, &mut self.writer, layout, &[0, p.mb_height]);
+            let whole = &mut whole[0];
+            for (slice, addr, mb) in held {
+                if whole.writer[addr] < slice {
+                    whole.slice = slice;
+                    whole.put(addr, &mb);
+                }
+            }
+        }
+        self.bufs[p.cur] = target;
+        self.snapshot = snapshot;
+        errors.sort_by_key(|e| e.0);
+        errors.into_iter().next().map_or(Ok(()), |e| Err(e.1))
     }
 
     /// Sets up the picture whose header was just read, at its first slice.
@@ -594,6 +799,7 @@ impl Decoder {
 
     /// The picture's slices are over.
     fn end_picture(&mut self) {
+        self.decode_batch();
         let Some(c) = self.cur.take() else { return };
         if c.first_field {
             self.first_field = Some(Pending {

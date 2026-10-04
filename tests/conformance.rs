@@ -257,3 +257,129 @@ fn decode_file_bytes(data: &[u8]) -> Vec<Frame> {
     frames.extend(dec.flush().unwrap());
     frames
 }
+
+/// FNV-1a over a stream's decoded frames: their sizes, flags and samples.
+fn frames_hash(frames: &[Frame]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |b: &[u8]| {
+        for &x in b {
+            h = (h ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for f in frames {
+        eat(&f.width.to_le_bytes());
+        eat(&f.height.to_le_bytes());
+        eat(&[f.progressive_frame as u8, f.top_field_first as u8, f.repeat_first_field as u8]);
+        eat(&f.data);
+    }
+    h
+}
+
+/// Every stream's every decoded frame, hashed: the decoder's output as of
+/// the commit that introduced the SIMD kernels and slice threading, from
+/// the original scalar double-precision decoder (which matches the suite's
+/// traces). Any change to a single sample of any frame of any stream — from
+/// a kernel, a processor, the thread count — fails here. CI runs this with
+/// the SIMD kernels and again with `MPEG2_FORCE_SCALAR=1`.
+const HASHES: &[(&str, u64)] = &[
+    ("422-profile/hhi/hhi_burst_422/hhi_burst_422_long.bits", 0xf5a9192a93f058a6),
+    ("422-profile/hhi/hhi_burst_422/hhi_burst_422_short.bits", 0xf58c7c7b0bddde91),
+    ("422-profile/ibm/ibm_dp_intra_422/ibm_dp_intra_422.m2v", 0x12a0a7a933392690),
+    ("422-profile/sony/sony_422_id01-1/sony_422_id01-1.bs", 0x88f94c55d7a1f077),
+    ("422-profile/sony/sony_422_id03-1/sony_422_id03-1.bs", 0x6d7a974566dd99c5),
+    ("422-profile/sony/sony_422_id13-1/sony_422_id13-1.bs", 0x29a27ddcdf2ca282),
+    ("422-profile/tek/Tek6-422-bigBpic/Tek6.bit", 0x193bdbc48352c381),
+    ("422-profile/tek/Tek7-422-smallSlices/Tek7.bit", 0x962917ff0b4eda06),
+    ("422-profile/tek/Tek9-422-uniformVLC/Tek9.bit", 0x4f17965ecec3dc48),
+    ("main-profile/att/att_mismatch/att.bits", 0x8177d01c64a84c33),
+    ("main-profile/ccett/mcp10ccett/mcp10ccett.bits", 0x03da7dc6d722ea1d),
+    ("main-profile/chromatic/chroma_dct_type-1/test.mpg", 0x3cb14c7f4ea93e35),
+    ("main-profile/compcore/ccm1/ccm1.mpg", 0x5fcc33ebe336d4f5),
+    ("main-profile/gi/gi4/video.bits", 0xda6d69c4de5b15b7),
+    ("main-profile/gi/gi6/bit_stream", 0x2489bc84ad1c8555),
+    ("main-profile/gi/gi7/bit_stream", 0xf0532dd582c58cb7),
+    ("main-profile/gi/gi_9/bit_stream", 0x755e3703c2153078),
+    ("main-profile/gi/gi_from_tape/gi_stream", 0x78e752f16a3dbb03),
+    ("main-profile/hhi/hhi_burst_long/hhi_burst_long.bits", 0x236b2f2cababd386),
+    ("main-profile/hhi/hhi_burst_short/hhi_burst_short.bits", 0xf3e2d9ddabbfc512),
+    ("main-profile/ibm/ibm-bw-v3/ibm-bw.BITS", 0xdb5d1b6c989b9ee2),
+    ("main-profile/lep/bits_conf_lep_11/bits_conf_lep_11.bits", 0xdfe76e3c3874177d),
+    ("main-profile/mei/MEI.stream16.long/MEI.stream16.long", 0x5b5459d169843361),
+    ("main-profile/mei/MEI.stream16v2/MEI.stream16v2", 0xd205dc87b1dde4f2),
+    ("main-profile/mei/mei.2conftest.4f/mei_2stream.4f", 0x84e4e1232dfe250c),
+    ("main-profile/mei/mei.2conftest.60f.new/mei_2stream.60f.new", 0xc4a79175b6c01bbb),
+    ("main-profile/nokia/nokia6/nokia6_dual.bit", 0x8c33d42121dda324),
+    ("main-profile/nokia/nokia6/nokia6_dual_60.bit", 0xd08eb13ca4639ae0),
+    ("main-profile/nokia/nokia_7/nokia7_dual.bit", 0x2ab07237e03723f8),
+    ("main-profile/ntr/ntr_skipped_v3/ntr_skipped_v3.bits", 0xd9520631006feae3),
+    ("main-profile/sony/sony-ct1/sony-ct1.bits", 0xdf73c78dc07b66c0),
+    ("main-profile/sony/sony-ct2/sony-ct2.bits", 0xd44e7e1e388c4cb3),
+    ("main-profile/sony/sony-ct3/sony-ct3.bs", 0xdf187d44aa6138c9),
+    ("main-profile/sony/sony-ct4/sony-ct4.bs", 0xf1c33586e4544fe4),
+    ("main-profile/tceh/tceh_conf2/conf2.bits", 0xc185728a4b311294),
+    ("main-profile/tcela/tcela-10-killer/tcela-10.bits", 0x07286322dad7c9e2),
+    ("main-profile/tcela/tcela-14-bff-dp/tcela-14.bits", 0x89d39ba472742e8c),
+    ("main-profile/tcela/tcela-14-bff-dp/tcela-14.short.bits", 0xdcc1b58ba7aae3d3),
+    ("main-profile/tcela/tcela-15-stuffing/tcela-15.bits", 0xf549f4717af077c5),
+    ("main-profile/tcela/tcela-16-matrices/tcela-16.bits", 0xc125a4ee5de0c4e6),
+    ("main-profile/tcela/tcela-17-dots/tcela-17.bits", 0x2a40948e89496347),
+    ("main-profile/tcela/tcela-18-d-pict/tcela-18.bits", 0xf9366a776a7e8544),
+    ("main-profile/tcela/tcela-19-wide/tcela-19.bits", 0x2a805677fe26b161),
+    ("main-profile/tcela/tcela-6-slices/tcela-6.bits", 0x230cb9e3b204e9b1),
+    ("main-profile/tcela/tcela-7-slices/tcela-7.bits", 0xa873b905bff252c9),
+    ("main-profile/tcela/tcela-8-fp-dp/tcela-8.bits", 0xe6fcc41a32849bf0),
+    ("main-profile/tcela/tcela-9-fp-dp/tcela-9.bits", 0x09f1fd88e93ff629),
+    ("main-profile/tek/Tek-5-long/conf4.bit", 0xecf53af1415bb02e),
+    ("main-profile/tek/Tek-5.2/conf4.bit", 0x935ae452cc9c4334),
+    ("main-profile/teracom/teracom_vlc4/teracom_vlc4.bin", 0xd32cd39dcdaf04d5),
+    ("main-profile/ti/TI_cl_2/TI_c1_2.bits", 0x21cba0e13dd8d36f),
+    ("main-profile/toshiba/toshiba_DPall-0/toshiba_DPall-0.mpg", 0x12131db4ac07aadb),
+    ("main-profile/twilight_zone/anonymous/mpeg_target_practice.mpg", 0xdda887119cee6bb4),
+    ("main-profile/twilight_zone/mei/MEI.stream17.long/MEI.stream17.long", 0x58525644f94da641),
+    ("main-profile/twilight_zone/mei/MEI2.stream17/MEI2.stream17", 0x1ef3386f40aef92e),
+    ("main-profile/twilight_zone/tcela/tcela-11v2/tcela-11v2.bits", 0x2fe45c0d423fff42),
+    ("main-profile/twilight_zone/tcela/tcela-12/tcela-12.bits", 0x38859e9b2efc3f21),
+];
+
+#[test]
+fn every_stream_decodes_to_its_recorded_frames() {
+    let Some(dir) = suite() else { return };
+    let print = std::env::var_os("MPEG2_PRINT_HASHES").is_some();
+    let threads: Vec<usize> = match std::env::var("MPEG2_TEST_THREADS") {
+        Ok(v) => v.split(',').map(|t| t.parse().expect("MPEG2_TEST_THREADS")).collect(),
+        Err(_) => vec![1, 4],
+    };
+    let mut failed = Vec::new();
+    for &(path, ..) in STREAMS {
+        let data = std::fs::read(dir.join(path)).unwrap();
+        for &t in &threads {
+            let frames = decode_threads(&data, t);
+            let h = frames_hash(&frames);
+            if print {
+                println!("    (\"{path}\", {h:#018x}),");
+                break;
+            }
+            let want = HASHES.iter().find(|e| e.0 == path).unwrap_or_else(|| panic!("{path}: no recorded hash")).1;
+            if h != want {
+                failed.push(format!("{path} (threads {t}): {h:#018x}, recorded {want:#018x}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "decoded frames differ:\n{}", failed.join("\n"));
+    eprintln!("conformance: {} streams x threads {threads:?}: every frame as recorded", STREAMS.len());
+}
+
+fn decode_threads(data: &[u8], threads: usize) -> Vec<Frame> {
+    let mut dec = Decoder::new();
+    set_threads(&mut dec, threads);
+    let mut frames = Vec::new();
+    for chunk in data.chunks(65536) {
+        frames.extend(dec.decode(chunk).unwrap());
+    }
+    frames.extend(dec.flush().unwrap());
+    frames
+}
+
+fn set_threads(dec: &mut Decoder, threads: usize) {
+    dec.set_threads(threads);
+}

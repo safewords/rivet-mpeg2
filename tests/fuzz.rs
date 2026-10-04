@@ -36,6 +36,26 @@ fn feed(data: &[u8], chunk: usize) -> usize {
     n
 }
 
+/// Decodes `data` in `chunk`-byte pieces on `threads` threads: every
+/// call's frames or error.
+fn outcomes(data: &[u8], chunk: usize, threads: usize) -> Vec<Result<Vec<mpeg2::Frame>, String>> {
+    let mut dec = Decoder::new();
+    dec.set_threads(threads);
+    let mut out: Vec<_> = data.chunks(chunk.max(1)).map(|c| dec.decode(c).map_err(|e| e.to_string())).collect();
+    out.push(dec.flush().map_err(|e| e.to_string()));
+    out
+}
+
+/// Slice threads change nothing, even on damaged streams (slices running
+/// into rows other threads own, slices out of order, errors mid-picture):
+/// the same frames and the same errors from the same calls.
+fn same_on_threads(data: &[u8], chunk: usize) {
+    let one = outcomes(data, chunk, 1);
+    for t in [2, 3, 8] {
+        assert!(outcomes(data, chunk, t) == one, "{t} threads differ from one");
+    }
+}
+
 /// 256 cases unless PROPTEST_CASES says otherwise (e.g. 20000 for a long
 /// local run in release with overflow checks).
 fn config() -> ProptestConfig {
@@ -85,6 +105,7 @@ proptest! {
             data[i] ^= 1 << bit;
         }
         feed(&data, chunk);
+        same_on_threads(&data, chunk);
     }
 
     #[test]
@@ -101,6 +122,7 @@ proptest! {
         let at = garbage.len() % data.len().max(1);
         data.splice(at..at, garbage);
         feed(&data, chunk);
+        same_on_threads(&data, chunk);
     }
 
     /// Whole start-code units (a header, an extension, a slice) of random
@@ -125,6 +147,7 @@ proptest! {
             data.splice(to..to, piece);
         }
         feed(&data, chunk);
+        same_on_threads(&data, chunk);
     }
 }
 
@@ -224,4 +247,45 @@ fn a_size_change_mid_picture_does_not_panic() {
             feed(&data, chunk);
         }
     }
+}
+
+/// Every picture's slices reversed and its first slice repeated at the end:
+/// slices out of row order, rows written twice (the later write wins).
+/// Threads split such pictures into bands the slices do not respect; the
+/// frames must still be those of one thread.
+#[test]
+fn slices_out_of_order_decode_the_same_on_threads() {
+    let cfg = EncoderConfig { b_frames: 1, gop_size: 4, ..EncoderConfig::new(64, 96) };
+    let frames: Vec<_> = (0..5).map(|t| synthetic(64, 96, t)).collect();
+    let s = encode(cfg, &frames);
+    let starts: Vec<usize> = s.windows(3).enumerate().filter(|(_, w)| *w == [0, 0, 1]).map(|(i, _)| i).collect();
+    let units: Vec<&[u8]> =
+        starts.iter().enumerate().map(|(k, &a)| &s[a..starts.get(k + 1).copied().unwrap_or(s.len())]).collect();
+    let is_slice = |u: &[u8]| (1..=0xaf).contains(&u[3]);
+    let mut data = Vec::new();
+    let mut run: Vec<&[u8]> = Vec::new();
+    for u in units.iter().copied().chain([&[0u8, 0, 1, 0xb7][..]]) {
+        if is_slice(u) {
+            run.push(u);
+            continue;
+        }
+        if !run.is_empty() {
+            let first = run[0];
+            run.reverse();
+            run.push(first);
+            data.extend(run.drain(..).flatten());
+        }
+        data.extend_from_slice(u);
+    }
+    let one = outcomes(&data, data.len(), 1);
+    assert!(one.iter().all(|o| o.is_ok()), "{one:?}");
+    for t in [2, 3, 4, 6, 16] {
+        assert!(outcomes(&data, data.len(), t) == one, "{t} threads");
+    }
+    // And the same frames as the stream in order: every row's last write is
+    // its own slice's.
+    let all = |o: Vec<Result<Vec<mpeg2::Frame>, String>>| o.into_iter().flat_map(Result::unwrap).collect::<Vec<_>>();
+    let (ordered, one) = (all(outcomes(&s, s.len(), 1)), all(one));
+    assert_eq!(ordered.len(), 5);
+    assert!(ordered == one);
 }
