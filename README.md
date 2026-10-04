@@ -185,17 +185,20 @@ at quantiser_scale_code 4, two B-pictures between references: about 23
 and 40 Mb/s); "before" is the commit before the SIMD kernels, single
 threaded.
 
-| frames/s | before | 1 thread | 1 thread, scalar | 8 threads | 16 threads |
-|---|---|---|---|---|---|
-| decode 1280 × 720 | 165 | 422 | 213 | 1232 | 1048 |
-| decode 1920 × 1080 | 75 | 188 | 95 | 708 | 705 |
-| decode 704 × 480, Tek-5-long (field pictures) | 441 | 859 | — | 1786 (default) | — |
-| encode 1280 × 720 | 23.0 | 57.7 | 27.3 | 304 | 366 |
-| encode 1920 × 1080 | 9.5 | 26.9 | 11.7 | 143 | 188 |
+| frames/s | before | 1 thread | 1 thread, scalar | 8 threads | 16 threads | 32 threads |
+|---|---|---|---|---|---|---|
+| decode 1280 × 720 | 165 | 422 | 213 | 1669 | 2028 | 2146 |
+| decode 1920 × 1080 | 75 | 188 | 95 | 817 | 1072 | 1122 |
+| decode 704 × 480, Tek-5-long (field pictures) | 441 | 859 | — | — | — | — |
+| encode 1280 × 720 | 23.0 | 57.7 | 27.3 | 326 | 409 | 377 |
+| encode 1920 × 1080 | 9.5 | 26.9 | 11.7 | 148 | 186 | 142 |
 
-The decoder's default is a thread per core up to 8 (beyond that, copying
-each frame out bounds it); the encoder's, a thread per core (208 frames/s
-at 1080p on all 32 hardware threads). Per kernel, nanoseconds per call
+The threads are a pool started once per decoder or encoder. Decoding a
+frame ends with copying it out into new memory, whose first writes the
+operating system serves one page at a time however many threads write
+them; one of the slice threads touches the next frame's memory while the
+others decode, and the copy itself is shared out. The default for both is
+a thread per core (the decoder's at most 32). Per kernel, nanoseconds per call
 (`examples/kernels.rs`; "original" is the code each kernel replaced):
 
 | kernel | original | scalar | SSE2 | AVX2 | AVX-512 |
