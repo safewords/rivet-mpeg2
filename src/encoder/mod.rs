@@ -58,13 +58,16 @@ pub struct EncoderConfig {
     pub q_scale_type: bool,
     /// intra_dc_precision: 0–2 (8 to 10 bits) in Main Profile.
     pub intra_dc_precision: u8,
+    /// Threads coding a picture's macroblock rows (0: one per available
+    /// core). The stream is the same, bit for bit, for every setting.
+    pub threads: usize,
 }
 
 impl EncoderConfig {
     /// Defaults: 25 frames/s, square samples, 12-frame GOPs with two
     /// B-pictures between references, quantiser_scale_code 4, ±32 samples
     /// of motion search, Table B.15 for intra blocks, zigzag scan, linear
-    /// quantiser scale, 8-bit intra DC.
+    /// quantiser scale, 8-bit intra DC, one thread per core.
     pub fn new(width: u32, height: u32) -> EncoderConfig {
         EncoderConfig {
             width,
@@ -79,6 +82,7 @@ impl EncoderConfig {
             alternate_scan: false,
             q_scale_type: false,
             intra_dc_precision: 0,
+            threads: 0,
         }
     }
 }
@@ -122,6 +126,9 @@ pub struct Encoder {
     rate: Option<Rate>,
     qcode: u8,
     finished: bool,
+    /// The reconstruction of every picture coded, by display index, when
+    /// asked for (`keep_reconstructions`).
+    recons: Option<Vec<(u64, PicBuf)>>,
 }
 
 impl Encoder {
@@ -185,6 +192,7 @@ impl Encoder {
             rate,
             qcode,
             finished: false,
+            recons: None,
         })
     }
 
@@ -235,6 +243,39 @@ impl Encoder {
             self.finished = true;
         }
         Ok(w.finish())
+    }
+
+    /// From now on, keep the reconstruction of every picture coded — the
+    /// pictures a decoder will reconstruct from the stream, B-pictures too —
+    /// for [`take_reconstructions`](Self::take_reconstructions). For tests:
+    /// they check that a decoder's output equals them, sample for sample.
+    #[doc(hidden)]
+    pub fn keep_reconstructions(&mut self) {
+        self.recons.get_or_insert_with(Vec::new);
+    }
+
+    /// The reconstructions kept since the last call, in display order,
+    /// cropped to the frame size.
+    #[doc(hidden)]
+    pub fn take_reconstructions(&mut self) -> Vec<Frame> {
+        let mut v = self.recons.as_mut().map(std::mem::take).unwrap_or_default();
+        v.sort_by_key(|r| r.0);
+        let (w, h) = (self.cfg.width, self.cfg.height);
+        v.into_iter()
+            .map(|(_, b)| {
+                let mut f = Frame::new(w, h, ChromaFormat::Yuv420);
+                for c in 0..3 {
+                    let pw = f.planes[c].width as usize;
+                    let bw = b.dims(c).0;
+                    let rows = f.planes[c].height as usize;
+                    let dst = f.plane_mut(c);
+                    for y in 0..rows {
+                        dst[y * pw..y * pw + pw].copy_from_slice(&b.planes[c][y * bw..y * bw + pw]);
+                    }
+                }
+                f
+            })
+            .collect()
     }
 
     /// Copies a frame into a macroblock-aligned buffer, repeating the edge
@@ -290,13 +331,21 @@ impl Encoder {
         let previous = self.newer.take();
         let refp = if ptype == 2 { previous.as_ref() } else { None };
         self.code(w, ptype, tr, &anchor, refp, None, Some(&mut recon));
+        if let Some(v) = &mut self.recons {
+            v.push((anchor_idx, recon.clone()));
+        }
         self.older = previous;
         self.newer = Some(recon);
         self.last_anchor = Some(anchor_idx);
         for (idx, f) in frames {
             let tr = (idx - self.gop_start) as u16;
             let (older, newer) = (self.older.take(), self.newer.take());
-            self.code(w, 3, tr, &f, older.as_ref(), newer.as_ref(), None);
+            // A B-picture is reconstructed only to be checked.
+            let mut recon = self.recons.is_some().then(|| PicBuf::new(self.mb_width * 16, self.mb_height * 16, ChromaFormat::Yuv420));
+            self.code(w, 3, tr, &f, older.as_ref(), newer.as_ref(), recon.as_mut());
+            if let (Some(v), Some(r)) = (&mut self.recons, recon) {
+                v.push((idx, r));
+            }
             self.older = older;
             self.newer = newer;
         }
@@ -378,7 +427,11 @@ impl Encoder {
             f_code: fc,
             search_range: self.cfg.search_range.clamp(1, 1023) as i32,
         };
-        code_picture(&settings, src, fwd, bwd, recon, w);
+        let threads = match self.cfg.threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            n => n,
+        };
+        code_picture(&settings, src, fwd, bwd, recon, w, threads);
         let bits = (w.bit_len() - start) as f64;
         if let Some(r) = &mut self.rate {
             let qs = f64::from(crate::tables::quantiser_scale(self.cfg.q_scale_type, qcode));

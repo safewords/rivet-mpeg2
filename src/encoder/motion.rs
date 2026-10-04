@@ -3,40 +3,26 @@
 //! a half-sample refinement, all by luma SAD.
 
 use crate::decoder::mc::{self, MbPred, PicBuf, Region, View};
+use crate::dsp::{Blk, McSrc};
 use crate::frame::ChromaFormat;
 
 /// SAD of the 16×16 luma block at (`x`, `y`) of `src` against `refp`
-/// displaced by the whole-sample vector (`dx`, `dy`), stopping early once it
-/// passes `limit`.
+/// displaced by the whole-sample vector (`dx`, `dy`).
+/// Past `limit` it may stop early, returning a value that is still at
+/// least `limit`.
 fn sad_full(src: &PicBuf, refp: &PicBuf, x: usize, y: usize, dx: i32, dy: i32, limit: u32) -> u32 {
     let w = src.width;
     let rx = (x as i32 + dx) as usize;
     let ry = (y as i32 + dy) as usize;
-    let mut sad = 0u32;
-    for j in 0..16 {
-        let a = &src.planes[0][(y + j) * w + x..][..16];
-        let b = &refp.planes[0][(ry + j) * w + rx..][..16];
-        for i in 0..16 {
-            sad += u32::from(a[i].abs_diff(b[i]));
-        }
-        if sad >= limit {
-            return sad;
-        }
-    }
-    sad
+    let a = Blk { buf: &src.planes[0], off: y * w + x, stride: w };
+    (crate::dsp::dsp().sad16)(a, Blk { buf: &refp.planes[0], off: ry * w + rx, stride: w }, limit)
 }
 
 /// SAD of a source macroblock's luma against a prediction.
 pub(crate) fn sad_pred(src: &PicBuf, x: usize, y: usize, pred: &[u8; 256]) -> u32 {
     let w = src.width;
-    let mut sad = 0u32;
-    for j in 0..16 {
-        let a = &src.planes[0][(y + j) * w + x..][..16];
-        for i in 0..16 {
-            sad += u32::from(a[i].abs_diff(pred[j * 16 + i]));
-        }
-    }
-    sad
+    let a = Blk { buf: &src.planes[0], off: y * w + x, stride: w };
+    (crate::dsp::dsp().sad16)(a, Blk { buf: pred, off: 0, stride: 16 }, u32::MAX)
 }
 
 /// Forms the frame prediction of the macroblock at (`x`, `y`) from `refp`
@@ -44,6 +30,30 @@ pub(crate) fn sad_pred(src: &PicBuf, x: usize, y: usize, pred: &[u8; 256]) -> u3
 pub(crate) fn predict(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg: bool, pred: &mut MbPred) {
     let r = Region { x: x as i32, y: y as i32, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv, avg };
     mc::predict(refp, View::Frame, ChromaFormat::Yuv420, &r, pred);
+}
+
+/// The luma alone of [`predict`]'s prediction: what the searches compare
+/// candidates by.
+pub(crate) fn predict_luma(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg: bool, pred: &mut [u8; 256]) {
+    let w = refp.width as i32;
+    let (ix, iy) = (x as i32 + (mv[0] >> 1), y as i32 + (mv[1] >> 1));
+    let (hx, hy) = (mv[0] & 1, mv[1] & 1);
+    if ix >= 0 && iy >= 0 && ix + 16 + hx <= w && iy + 16 + hy <= refp.height as i32 {
+        let s = McSrc {
+            src: &refp.planes[0],
+            off: iy as usize * refp.width + ix as usize,
+            stride: refp.width,
+            w: 16,
+            h: 16,
+            hx: hx != 0,
+            hy: hy != 0,
+        };
+        (crate::dsp::dsp().mc)(&s, pred, 0, 16, avg);
+    } else {
+        let mut p = MbPred { y: *pred, c: [[0; 128]; 2] };
+        predict(refp, x, y, mv, avg, &mut p);
+        *pred = p.y;
+    }
 }
 
 /// The best half-sample vector for the macroblock at (`x`, `y`) within
@@ -115,7 +125,7 @@ pub(crate) fn search(
     }
     // Half-sample refinement around the whole-sample best.
     let mut mv = [best.0 * 2, best.1 * 2];
-    let mut pred = MbPred::new();
+    let mut pred = [0u8; 256];
     let mut best_half = best_sad;
     let centre = mv;
     for oy in -1..=1 {
@@ -133,8 +143,8 @@ pub(crate) fn search(
             if ix < 0 || iy < 0 || ix + 16 + (cand[0] & 1) > w || iy + 16 + (cand[1] & 1) > h {
                 continue;
             }
-            predict(refp, x, y, cand, false, &mut pred);
-            let s = sad_pred(src, x, y, &pred.y);
+            predict_luma(refp, x, y, cand, false, &mut pred);
+            let s = sad_pred(src, x, y, &pred);
             if s < best_half {
                 best_half = s;
                 mv = cand;

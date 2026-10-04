@@ -126,6 +126,16 @@ impl BitWriter {
         self.out.extend_from_slice(&[0, 0, 1, code]);
     }
 
+    /// Byte-aligns and then appends everything `other` holds, its last
+    /// partial byte included: afterwards this writer is exactly as if
+    /// `other`'s bits had been written to it directly after the alignment.
+    pub(crate) fn append(&mut self, other: BitWriter) {
+        self.align();
+        self.out.extend_from_slice(&other.out);
+        self.acc = other.acc;
+        self.n = other.n;
+    }
+
     /// Bits written so far.
     pub(crate) fn bit_len(&self) -> usize {
         self.out.len() * 8 + self.n as usize

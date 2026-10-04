@@ -3,6 +3,8 @@
 //! pictures predict from.
 
 use super::motion;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use crate::bits::BitWriter;
 use crate::decoder::mc::{MbPred, PicBuf};
 use crate::idct::{fdct, idct};
@@ -46,74 +48,206 @@ struct SliceState {
     prev_dirs: u8,
 }
 
+/// The reconstruction of one macroblock row: its luma lines and its two
+/// chroma planes' lines.
+struct RowOut<'a> {
+    planes: [&'a mut [u8]; 3],
+    width: usize,
+    cwidth: usize,
+}
+
+impl RowOut<'_> {
+    fn write(&mut self, mbx: usize, mb: &MbPred) {
+        let w = self.width;
+        for j in 0..16 {
+            let o = j * w + mbx * 16;
+            self.planes[0][o..o + 16].copy_from_slice(&mb.y[j * 16..j * 16 + 16]);
+        }
+        let cw = self.cwidth;
+        for c in 0..2 {
+            for j in 0..8 {
+                let o = j * cw + mbx * 8;
+                self.planes[c + 1][o..o + 8].copy_from_slice(&mb.c[c][j * 8..j * 8 + 8]);
+            }
+        }
+    }
+}
+
+/// What the rows of a picture share while they are coded at once: each
+/// macroblock's chosen vectors (the row below takes its search candidates
+/// from them) and how many macroblocks of each row are done.
+struct Wavefront {
+    mb_width: usize,
+    /// `[forward x, forward y, backward x, backward y]` per macroblock.
+    mvs: Vec<[AtomicI32; 4]>,
+    done: Vec<AtomicUsize>,
+}
+
+impl Wavefront {
+    /// The vectors of macroblock (`mbx`, `mby`), once its row has got that
+    /// far.
+    fn above(&self, mbx: usize, mby: usize) -> [[i32; 2]; 2] {
+        let done = &self.done[mby];
+        let mut spins = 0u32;
+        while done.load(Ordering::Acquire) <= mbx {
+            if spins < 256 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+            spins += 1;
+        }
+        let v = &self.mvs[mby * self.mb_width + mbx];
+        let g = |i: usize| v[i].load(Ordering::Relaxed);
+        [[g(0), g(1)], [g(2), g(3)]]
+    }
+
+    fn publish(&self, mbx: usize, mby: usize, mv: [[i32; 2]; 2]) {
+        let v = &self.mvs[mby * self.mb_width + mbx];
+        for (i, c) in [mv[0][0], mv[0][1], mv[1][0], mv[1][1]].into_iter().enumerate() {
+            v[i].store(c, Ordering::Relaxed);
+        }
+        self.done[mby].store(mbx + 1, Ordering::Release);
+    }
+}
+
 /// Codes the slices of one picture into `w`, reconstructing into `recon`
 /// when the picture is a reference.
-#[allow(clippy::needless_range_loop)] // mbx is a position, not just an index
+///
+/// One slice per macroblock row. A macroblock's motion search starts from
+/// the vectors of the macroblock to its left and the one above, so the rows
+/// can be coded on several `threads` at once, each a little behind the row
+/// above it (a wavefront); every decision is the one a single thread would
+/// make, and each row's bits are written to its own writer and joined in
+/// order — the stream is the same, bit for bit, whatever the thread count.
 pub(crate) fn code_picture(
     s: &PictureSettings,
     src: &PicBuf,
     fwd: Option<&PicBuf>,
     bwd: Option<&PicBuf>,
-    mut recon: Option<&mut PicBuf>,
+    recon: Option<&mut PicBuf>,
     w: &mut BitWriter,
+    threads: usize,
 ) {
-    let e = encoders();
     let mb_width = src.width / 16;
     let mb_height = src.height / 16;
+    let wave = Wavefront {
+        mb_width,
+        mvs: (0..mb_width * mb_height).map(|_| Default::default()).collect(),
+        done: (0..mb_height).map(|_| AtomicUsize::new(0)).collect(),
+    };
+    // Each row's reconstruction lines, handed to whichever thread codes it.
+    let outs: Vec<Option<RowOut>> = match recon {
+        Some(r) => {
+            let (width, cwidth) = (r.width, r.cwidth);
+            let [y, u, v] = &mut r.planes;
+            y.chunks_mut(16 * width)
+                .zip(u.chunks_mut(8 * cwidth))
+                .zip(v.chunks_mut(8 * cwidth))
+                .map(|((y, u), v)| Some(RowOut { planes: [y, u, v], width, cwidth }))
+                .collect()
+        }
+        None => (0..mb_height).map(|_| None).collect(),
+    };
+    let outs = Mutex::new(outs);
+    let rows: Mutex<Vec<Option<BitWriter>>> = Mutex::new((0..mb_height).map(|_| None).collect());
+    let next = AtomicUsize::new(0);
+    // Rows are taken in order, so the row a thread waits on is always being
+    // coded by another (or is done).
+    let work = || {
+        loop {
+            let mby = next.fetch_add(1, Ordering::Relaxed);
+            if mby >= mb_height {
+                break;
+            }
+            let out = outs.lock().expect("rows")[mby].take();
+            let bits = code_row(s, src, fwd, bwd, mby, out, &wave);
+            rows.lock().expect("rows")[mby] = Some(bits);
+        }
+    };
+    let threads = threads.min(mb_height).max(1);
+    if threads == 1 {
+        work();
+    } else {
+        std::thread::scope(|sc| {
+            for _ in 1..threads {
+                sc.spawn(work);
+            }
+            work();
+        });
+    }
+    for bits in rows.into_inner().expect("rows").into_iter().flatten() {
+        w.append(bits);
+    }
+}
+
+/// Codes macroblock row `mby` as one slice, returning its bits.
+#[allow(clippy::needless_range_loop)] // mbx is a position, not just an index
+fn code_row(
+    s: &PictureSettings,
+    src: &PicBuf,
+    fwd: Option<&PicBuf>,
+    bwd: Option<&PicBuf>,
+    mby: usize,
+    mut recon: Option<RowOut>,
+    wave: &Wavefront,
+) -> BitWriter {
+    let e = encoders();
+    let mb_width = src.width / 16;
     let qs = quantiser_scale(s.q_scale_type, s.quantiser_scale_code);
     let f = 1i32 << (s.f_code - 1);
     let (low, high) = (-16 * f, 16 * f - 1);
     let dc_reset = 1 << (7 + s.intra_dc_precision);
-    let mut row_mvs = vec![[[0i32; 2]; 2]; mb_width];
+    let quant = Quant::new(qs);
+    let mut w = BitWriter::new();
+    w.start_code(mby as u8 + 1);
+    w.put(5, u32::from(s.quantiser_scale_code));
+    w.put_bit(false); // extra_bit_slice
+    let mut st = SliceState { dc_pred: [dc_reset; 3], pmv: [[0; 2]; 2], prev_dirs: 0 };
+    let mut skipped = 0u32;
+    let mut left_mv = [[0i32; 2]; 2];
+    for mbx in 0..mb_width {
+        let (x, y) = (mbx * 16, mby * 16);
+        let above = if mby == 0 { [[0; 2]; 2] } else { wave.above(mbx, mby - 1) };
+        let mut mb = decide(s, src, fwd, bwd, x, y, [left_mv, above], &st, low, high, &quant);
+        let interior = mbx != 0 && mbx != mb_width - 1;
 
-    for mby in 0..mb_height {
-        w.start_code(mby as u8 + 1);
-        w.put(5, u32::from(s.quantiser_scale_code));
-        w.put_bit(false); // extra_bit_slice
-        let mut st = SliceState { dc_pred: [dc_reset; 3], pmv: [[0; 2]; 2], prev_dirs: 0 };
-        let mut skipped = 0u32;
-        let mut left_mv = [[0i32; 2]; 2];
-        for mbx in 0..mb_width {
-            let (x, y) = (mbx * 16, mby * 16);
-            let mut mb = decide(s, src, fwd, bwd, x, y, qs, [left_mv, row_mvs[mbx]], &st, low, high);
-            let interior = mbx != 0 && mbx != mb_width - 1;
-
-            // Skipped macroblocks (7.6.6): no coefficients, and the
-            // prediction the decoder will infer is the one chosen.
-            if !mb.intra && mb.cbp == 0 && interior {
-                let skip = match s.picture_type {
-                    2 => mb.dirs == 1 && mb.mv[0] == [0, 0],
-                    _ => {
-                        st.prev_dirs == mb.dirs
-                            && (0..2).all(|d| mb.dirs & (1 << d) == 0 || mb.mv[d] == st.pmv[d])
-                    }
-                };
-                if skip {
-                    skipped += 1;
-                    st.dc_pred = [dc_reset; 3];
-                    if s.picture_type == 2 {
-                        st.pmv = [[0; 2]; 2];
-                    }
-                    if let Some(r) = recon.as_deref_mut() {
-                        write_mb(r, mbx, mby, &mb.pred);
-                    }
-                    left_mv = [mb.mv[0], mb.mv[1]];
-                    row_mvs[mbx] = left_mv;
-                    continue;
+        // Skipped macroblocks (7.6.6): no coefficients, and the
+        // prediction the decoder will infer is the one chosen.
+        if !mb.intra && mb.cbp == 0 && interior {
+            let skip = match s.picture_type {
+                2 => mb.dirs == 1 && mb.mv[0] == [0, 0],
+                _ => {
+                    st.prev_dirs == mb.dirs
+                        && (0..2).all(|d| mb.dirs & (1 << d) == 0 || mb.mv[d] == st.pmv[d])
                 }
+            };
+            if skip {
+                skipped += 1;
+                st.dc_pred = [dc_reset; 3];
+                if s.picture_type == 2 {
+                    st.pmv = [[0; 2]; 2];
+                }
+                if let Some(r) = recon.as_mut() {
+                    r.write(mbx, &mb.pred);
+                }
+                left_mv = [mb.mv[0], mb.mv[1]];
+                wave.publish(mbx, mby, left_mv);
+                continue;
             }
-
-            e.put_mb_address_increment(w, skipped + 1);
-            skipped = 0;
-            write_macroblock(s, e, w, &mut mb, &mut st, dc_reset, low, high);
-            if let Some(r) = recon.as_deref_mut() {
-                let rec = reconstruct(s, &mb, qs);
-                write_mb(r, mbx, mby, &rec);
-            }
-            left_mv = if mb.intra { [[0; 2]; 2] } else { mb.mv };
-            row_mvs[mbx] = left_mv;
         }
+
+        e.put_mb_address_increment(&mut w, skipped + 1);
+        skipped = 0;
+        write_macroblock(s, e, &mut w, &mut mb, &mut st, dc_reset, low, high);
+        if let Some(r) = recon.as_mut() {
+            let rec = reconstruct(s, &mb, qs);
+            r.write(mbx, &rec);
+        }
+        left_mv = if mb.intra { [[0; 2]; 2] } else { mb.mv };
+        wave.publish(mbx, mby, left_mv);
     }
+    w
 }
 
 /// Chooses the coding of one macroblock and quantises its residual.
@@ -125,11 +259,11 @@ fn decide(
     bwd: Option<&PicBuf>,
     x: usize,
     y: usize,
-    qs: i32,
     neighbours: [[[i32; 2]; 2]; 2],
     st: &SliceState,
     low: i32,
     high: i32,
+    quant: &Quant,
 ) -> Mb {
     let mut mb = Mb { intra: true, dirs: 0, mv: [[0; 2]; 2], qf: [[0; 64]; 6], cbp: 0, pred: MbPred::new() };
     if s.picture_type != 1 {
@@ -147,11 +281,11 @@ fn decide(
             // Prefer the zero vector (and so skipped macroblocks) unless the
             // search found clearly better; in B-pictures, prefer the
             // predictor (a skip repeats it).
-            let mut p = MbPred::new();
+            let mut p = [0u8; 256];
             let pref = if s.picture_type == 2 { [0, 0] } else { st.pmv[d] };
             if mv != pref && vector_fits(pref, x, y, src, low, high) {
-                motion::predict(refp, x, y, pref, false, &mut p);
-                let sp = motion::sad_pred(src, x, y, &p.y);
+                motion::predict_luma(refp, x, y, pref, false, &mut p);
+                let sp = motion::sad_pred(src, x, y, &p);
                 if sp <= sad + 64 {
                     mv = pref;
                     sad = sp;
@@ -167,10 +301,10 @@ fn decide(
             }
         }
         if let (3, Some(f), Some(b)) = (s.picture_type, fwd, bwd) {
-            let mut p = MbPred::new();
-            motion::predict(f, x, y, found[0], false, &mut p);
-            motion::predict(b, x, y, found[1], true, &mut p);
-            let sad = motion::sad_pred(src, x, y, &p.y) + 48;
+            let mut p = [0u8; 256];
+            motion::predict_luma(f, x, y, found[0], false, &mut p);
+            motion::predict_luma(b, x, y, found[1], true, &mut p);
+            let sad = motion::sad_pred(src, x, y, &p) + 48;
             if best.is_none_or(|b| sad < b.0) {
                 best = Some((sad, 3, found));
             }
@@ -197,10 +331,14 @@ fn decide(
     for b in 0..6 {
         let mut blk = [0i32; 64];
         let (plane, px, py, stride) = block_origin(src, b, x, y);
+        let (pred, pstride, poff): (&[u8], usize, usize) =
+            if b < 4 { (&mb.pred.y, 16, (b >> 1) * 128 + (b & 1) * 8) } else { (&mb.pred.c[b - 4], 8, 0) };
         for j in 0..8 {
+            let srow = &src.planes[plane][(py + j) * stride + px..][..8];
+            let prow = &pred[poff + j * pstride..][..8];
+            let brow = &mut blk[j * 8..j * 8 + 8];
             for i in 0..8 {
-                let v = i32::from(src.planes[plane][(py + j) * stride + px + i]);
-                blk[j * 8 + i] = if mb.intra { v } else { v - i32::from(pred_sample(&mb.pred, b, i, j)) };
+                brow[i] = i32::from(srow[i]) - if mb.intra { 0 } else { i32::from(prow[i]) };
             }
         }
         let f = fdct(&blk);
@@ -209,24 +347,63 @@ fn decide(
             let dc_max = (1 << (8 + s.intra_dc_precision)) - 1;
             q[0] = ((f[0] + intra_dc_mult / 2) / intra_dc_mult).clamp(0, dc_max);
             for k in 1..64 {
-                let wq = i32::from(DEFAULT_INTRA_MATRIX[k]) * qs;
-                let a = (f[k].abs() * 16 + wq * 3 / 8) / wq;
+                let a = quant.intra[k].div(f[k].unsigned_abs() * 16 + quant.intra_bias[k]);
                 q[k] = (a * f[k].signum()).clamp(-2047, 2047);
             }
         } else {
-            let mut any = false;
+            let mut any = 0;
             for k in 0..64 {
-                let wq = i32::from(DEFAULT_NON_INTRA_MATRIX[k]) * qs;
-                let a = (f[k].abs() * 16) / wq;
+                let a = quant.non_intra[k].div(f[k].unsigned_abs() * 16);
                 q[k] = (a * f[k].signum()).clamp(-2047, 2047);
-                any |= q[k] != 0;
+                any |= q[k];
             }
-            if any {
+            if any != 0 {
                 mb.cbp |= 1 << (5 - b);
             }
         }
     }
     mb
+}
+
+/// Division by a fixed divisor `d` (1 ≤ d < 2¹⁶) as a multiplication:
+/// `n / d` = `(n · m) >> 32` with `m` = ⌊2³²/d⌋ + 1, exactly, for every
+/// `n · d < 2³²`. (Write n = qd + r: n·m/2³² = q + r/d + n·e/2³² for some
+/// 0 < e ≤ 1, and r/d ≤ 1 − 1/d while n·e/2³² < 1/d.) The quantiser's
+/// numerators stay below 2¹⁷ and its divisors below 2¹⁴.
+#[derive(Clone, Copy)]
+struct Divisor {
+    m: u64,
+}
+
+impl Divisor {
+    fn new(d: u32) -> Divisor {
+        debug_assert!((1..1 << 16).contains(&d));
+        Divisor { m: (1u64 << 32) / u64::from(d) + 1 }
+    }
+
+    #[inline]
+    fn div(self, n: u32) -> i32 {
+        ((u64::from(n) * self.m) >> 32) as i32
+    }
+}
+
+/// The quantiser's divisors (`W[k] · quantiser_scale`) and the intra
+/// rounding offsets, for one picture.
+struct Quant {
+    intra: [Divisor; 64],
+    intra_bias: [u32; 64],
+    non_intra: [Divisor; 64],
+}
+
+impl Quant {
+    fn new(qs: i32) -> Quant {
+        let wq = |m: &[u8; 64], k: usize| (u32::from(m[k]) * qs as u32).max(1);
+        Quant {
+            intra: std::array::from_fn(|k| Divisor::new(wq(&DEFAULT_INTRA_MATRIX, k))),
+            intra_bias: std::array::from_fn(|k| wq(&DEFAULT_INTRA_MATRIX, k) * 3 / 8),
+            non_intra: std::array::from_fn(|k| Divisor::new(wq(&DEFAULT_NON_INTRA_MATRIX, k))),
+        }
+    }
 }
 
 fn vector_fits(mv: [i32; 2], x: usize, y: usize, src: &PicBuf, low: i32, high: i32) -> bool {
@@ -241,21 +418,14 @@ fn vector_fits(mv: [i32; 2], x: usize, y: usize, src: &PicBuf, low: i32, high: i
 /// Sum of absolute deviations of the luma from its mean: the cost an intra
 /// macroblock is compared with.
 fn intra_activity(src: &PicBuf, x: usize, y: usize) -> u32 {
-    let w = src.width;
-    let mut sum = 0u32;
-    for j in 0..16 {
-        for i in 0..16 {
-            sum += u32::from(src.planes[0][(y + j) * w + x + i]);
-        }
-    }
+    use crate::dsp::Blk;
+    let sad16 = crate::dsp::dsp().sad16;
+    let s = Blk { buf: &src.planes[0], off: y * src.width + x, stride: src.width };
+    // Σ|s − 0| is the sum; Σ|s − mean| the deviation (a row of 16, stride 0,
+    // stands for the constant block).
+    let sum = sad16(s, Blk { buf: &[0; 16], off: 0, stride: 0 }, u32::MAX);
     let mean = (sum + 128) / 256;
-    let mut dev = 0u32;
-    for j in 0..16 {
-        for i in 0..16 {
-            dev += u32::from(src.planes[0][(y + j) * w + x + i]).abs_diff(mean);
-        }
-    }
-    dev
+    sad16(s, Blk { buf: &[mean as u8; 16], off: 0, stride: 0 }, u32::MAX)
 }
 
 /// `(plane, x, y, stride)` of block `b` of the macroblock at (`x`, `y`).
@@ -265,10 +435,6 @@ fn block_origin(src: &PicBuf, b: usize, x: usize, y: usize) -> (usize, usize, us
     } else {
         (b - 3, x / 2, y / 2, src.cwidth)
     }
-}
-
-fn pred_sample(p: &MbPred, b: usize, i: usize, j: usize) -> u8 {
-    if b < 4 { p.y[((b >> 1) * 8 + j) * 16 + (b & 1) * 8 + i] } else { p.c[b - 4][j * 8 + i] }
 }
 
 /// Writes one coded macroblock (after its address increment).
@@ -390,7 +556,8 @@ fn write_coefficients(
 /// The macroblock as a decoder will reconstruct it: dequantisation with
 /// mismatch control (7.4), the IDCT, prediction plus residual (7.6.8).
 fn reconstruct(s: &PictureSettings, mb: &Mb, qs: i32) -> MbPred {
-    let mut out = MbPred::new();
+    let mut out = if mb.intra { MbPred::new() } else { MbPred { y: mb.pred.y, c: mb.pred.c } };
+    let d = crate::dsp::dsp();
     let intra_dc_mult = 8 >> s.intra_dc_precision;
     for b in 0..6 {
         let coded = mb.intra || mb.cbp & (1 << (5 - b)) != 0;
@@ -414,33 +581,47 @@ fn reconstruct(s: &PictureSettings, mb: &Mb, qs: i32) -> MbPred {
                 f[63] ^= 1;
             }
             idct(&mut f);
-        }
-        for j in 0..8 {
-            for i in 0..8 {
-                let p = if mb.intra { 0 } else { i32::from(pred_sample(&mb.pred, b, i, j)) };
-                let v = (p + f[j * 8 + i]).clamp(0, 255) as u8;
-                if b < 4 {
-                    out.y[((b >> 1) * 8 + j) * 16 + (b & 1) * 8 + i] = v;
-                } else {
-                    out.c[b - 4][j * 8 + i] = v;
-                }
+            // Prediction plus residual, or (intra) the residual alone, each
+            // saturated to [0, 255]; an uncoded block keeps its prediction.
+            let kernel = if mb.intra { d.put_block } else { d.add_block };
+            if b < 4 {
+                kernel(&mut out.y, (b >> 1) * 128 + (b & 1) * 8, 16, &f);
+            } else {
+                kernel(&mut out.c[b - 4], 0, 8, &f);
             }
         }
     }
     out
 }
 
-fn write_mb(r: &mut PicBuf, mbx: usize, mby: usize, mb: &MbPred) {
-    let w = r.width;
-    for j in 0..16 {
-        let o = (mby * 16 + j) * w + mbx * 16;
-        r.planes[0][o..o + 16].copy_from_slice(&mb.y[j * 16..j * 16 + 16]);
-    }
-    let cw = r.cwidth;
-    for c in 0..2 {
-        for j in 0..8 {
-            let o = (mby * 8 + j) * cw + mbx * 8;
-            r.planes[c + 1][o..o + 8].copy_from_slice(&mb.c[c][j * 8..j * 8 + 8]);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tables::NON_LINEAR_QSCALE;
+
+    /// Every divisor the quantiser can use (each matrix entry times each
+    /// quantiser_scale of both scales), at both ends of every quotient's
+    /// run of numerators below 2¹⁷: the multiplication is monotonic in the
+    /// numerator, so agreeing at the ends is agreeing everywhere.
+    #[test]
+    fn reciprocal_division_is_exact() {
+        let mut divisors: Vec<u32> = Vec::new();
+        for scale in (1..=31).map(|c| 2 * c).chain(NON_LINEAR_QSCALE[1..].iter().map(|&v| i32::from(v))) {
+            for m in DEFAULT_INTRA_MATRIX.iter().chain(&DEFAULT_NON_INTRA_MATRIX) {
+                divisors.push(u32::from(*m) * scale as u32);
+            }
+        }
+        divisors.sort_unstable();
+        divisors.dedup();
+        for d in divisors {
+            let div = Divisor::new(d);
+            let mut k = 0;
+            while k * d < 1 << 17 {
+                for n in [k * d, (k + 1) * d - 1] {
+                    assert_eq!(div.div(n), (n / d) as i32, "{n} / {d}");
+                }
+                k += 1;
+            }
         }
     }
 }
