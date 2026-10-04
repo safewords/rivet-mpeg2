@@ -16,7 +16,7 @@
 //! double-precision IDCT, are matched sample for sample.
 
 /// `BASIS[u][x]` = C(u)/2 · cos((2x+1)uπ/16), C(0) = 1/√2, else 1.
-const BASIS: [[f64; 8]; 8] = [
+pub(crate) const BASIS: [[f64; 8]; 8] = [
     [
         0.35355339059327373,
         0.35355339059327373,
@@ -99,74 +99,168 @@ const BASIS: [[f64; 8]; 8] = [
     ],
 ];
 
+/// `BASIS` transposed: `BASIS_T[x][u]` = `BASIS[u][x]`, the forward
+/// transform's matrix in the shape the separable kernel takes.
+const BASIS_T: [[f64; 8]; 8] = {
+    let mut t = [[0.0; 8]; 8];
+    let mut i = 0;
+    while i < 8 {
+        let mut j = 0;
+        while j < 8 {
+            t[j][i] = BASIS[i][j];
+            j += 1;
+        }
+        i += 1;
+    }
+    t
+};
+
+/// [`BASIS_T`], for the kernel benchmark.
+pub(crate) fn basis_t() -> [[f64; 8]; 8] {
+    BASIS_T
+}
+
 /// Inverse DCT of a block of coefficients `F[v][u]` (raster order, each in
 /// [−2048, 2047]) in place, giving samples `f[y][x]` saturated to
 /// [−256, 255].
+///
+/// Rows, then columns: each output is the sum, in order, of the products
+/// `F · B` in double precision. The computation is fixed operation for
+/// operation, so its result is too, whichever kernel of [`crate::dsp`]
+/// carries it out (several columns at a time in SIMD).
+#[inline]
 pub(crate) fn idct(block: &mut [i32; 64]) {
     if block[1..].iter().all(|&c| c == 0) {
         // f(x, y) = F[0][0] · (1/√2)² / 4 = F[0][0] / 8 everywhere, exactly.
-        let v = (f64::from(block[0]) / 8.0).round().clamp(-256.0, 255.0) as i32;
+        let v = crate::dsp::round_away(f64::from(block[0]) / 8.0).clamp(-256, 255);
         block.fill(v);
         return;
     }
-    let mut tmp = [0.0f64; 64];
-    // Rows: tmp[v][x] = Σ_u F[v][u] · B[u][x].
-    for v in 0..8 {
-        let row = &block[v * 8..v * 8 + 8];
-        if row.iter().all(|&c| c == 0) {
-            continue;
-        }
-        for x in 0..8 {
-            let mut acc = 0.0;
-            for u in 0..8 {
-                acc += f64::from(row[u]) * BASIS[u][x];
-            }
-            tmp[v * 8 + x] = acc;
-        }
-    }
-    // Columns: f[y][x] = Σ_v tmp[v][x] · B[v][y].
-    for x in 0..8 {
-        for y in 0..8 {
-            let mut acc = 0.0;
-            for v in 0..8 {
-                acc += tmp[v * 8 + x] * BASIS[v][y];
-            }
-            // f64::round rounds half away from zero, as Annex A's round().
-            block[y * 8 + x] = acc.round().clamp(-256.0, 255.0) as i32;
-        }
-    }
+    let input = *block;
+    (crate::dsp::dsp().transform)(&input, &BASIS, block, -256, 255);
 }
 
 /// The forward DCT the encoder uses: separable, double precision, rounded
-/// to integers.
+/// to integers (half away from zero). Like [`idct`], the same result on
+/// every kernel.
+#[inline]
 pub(crate) fn fdct(input: &[i32; 64]) -> [i32; 64] {
-    let mut tmp = [0.0f64; 64];
-    // tmp[y][u] = Σ_x f[y][x] · B[u][x]
-    for y in 0..8 {
-        for u in 0..8 {
-            let mut acc = 0.0;
-            for x in 0..8 {
-                acc += f64::from(input[y * 8 + x]) * BASIS[u][x];
-            }
-            tmp[y * 8 + u] = acc;
-        }
-    }
     let mut out = [0; 64];
-    for u in 0..8 {
-        for v in 0..8 {
-            let mut acc = 0.0;
-            for y in 0..8 {
-                acc += tmp[y * 8 + u] * BASIS[v][y];
-            }
-            out[v * 8 + u] = acc.round() as i32;
-        }
-    }
+    (crate::dsp::dsp().transform)(input, &BASIS_T, &mut out, i32::MIN, i32::MAX);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::{self, Dsp};
+
+    /// The IDCT as first written (rows then columns, `f64::round`): every
+    /// rung's kernel must reproduce it exactly.
+    fn idct_original(block: &mut [i32; 64]) {
+        if block[1..].iter().all(|&c| c == 0) {
+            let v = (f64::from(block[0]) / 8.0).round().clamp(-256.0, 255.0) as i32;
+            block.fill(v);
+            return;
+        }
+        let mut tmp = [0.0f64; 64];
+        for v in 0..8 {
+            let row = &block[v * 8..v * 8 + 8];
+            if row.iter().all(|&c| c == 0) {
+                continue;
+            }
+            for x in 0..8 {
+                let mut acc = 0.0;
+                for u in 0..8 {
+                    acc += f64::from(row[u]) * BASIS[u][x];
+                }
+                tmp[v * 8 + x] = acc;
+            }
+        }
+        for x in 0..8 {
+            for y in 0..8 {
+                let mut acc = 0.0;
+                for v in 0..8 {
+                    acc += tmp[v * 8 + x] * BASIS[v][y];
+                }
+                block[y * 8 + x] = acc.round().clamp(-256.0, 255.0) as i32;
+            }
+        }
+    }
+
+    /// The forward DCT as first written.
+    fn fdct_original(input: &[i32; 64]) -> [i32; 64] {
+        let mut tmp = [0.0f64; 64];
+        for y in 0..8 {
+            for u in 0..8 {
+                let mut acc = 0.0;
+                for x in 0..8 {
+                    acc += f64::from(input[y * 8 + x]) * BASIS[u][x];
+                }
+                tmp[y * 8 + u] = acc;
+            }
+        }
+        let mut out = [0; 64];
+        for u in 0..8 {
+            for v in 0..8 {
+                let mut acc = 0.0;
+                for y in 0..8 {
+                    acc += tmp[y * 8 + u] * BASIS[v][y];
+                }
+                out[v * 8 + u] = acc.round() as i32;
+            }
+        }
+        out
+    }
+
+    /// The IDCT on one rung's kernel.
+    fn idct_on(d: &Dsp, block: &mut [i32; 64]) {
+        if block[1..].iter().all(|&c| c == 0) {
+            idct(block);
+            return;
+        }
+        let input = *block;
+        (d.transform)(&input, &BASIS, block, -256, 255);
+    }
+
+    /// Every rung's IDCT and FDCT equal the original code's, on sparse and
+    /// dense coefficient blocks of every IEEE 1180 range and on random
+    /// sample blocks.
+    #[test]
+    fn every_rung_reproduces_the_original_transforms() {
+        let mut rng = Ieee1180Rand(77);
+        for d in dsp::rungs() {
+            for i in 0..30_000 {
+                let mut b = [0i32; 64];
+                let (l, h) = [(2048, 2047), (256, 255), (5, 5), (300, 300)][i % 4];
+                let n = if i % 3 == 0 { 64 } else { 1 + i % 9 };
+                for _ in 0..n {
+                    b[rng.next(0, 63).clamp(0, 63) as usize] = rng.next(l, h) as i32;
+                }
+                let mut want = b;
+                idct_original(&mut want);
+                let mut got = b;
+                idct_on(d, &mut got);
+                assert_eq!(got, want, "{}: idct of {b:?}", d.name);
+                let mut s = [0i32; 64];
+                for v in s.iter_mut() {
+                    *v = rng.next(255, 255) as i32;
+                }
+                let mut f = [0; 64];
+                (d.transform)(&s, &BASIS_T, &mut f, i32::MIN, i32::MAX);
+                assert_eq!(f, fdct_original(&s), "{}: fdct of {s:?}", d.name);
+            }
+            // The DC-only blocks, every value.
+            for dc in -2048..=2047 {
+                let mut b = [0i32; 64];
+                b[0] = dc;
+                let mut want = b;
+                idct_original(&mut want);
+                idct_on(d, &mut b);
+                assert_eq!(b, want, "{}: DC {dc}", d.name);
+            }
+        }
+    }
     use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
     fn c(u: usize) -> f64 {
@@ -264,7 +358,7 @@ mod tests {
     /// when `sign` is −1), forward-transformed in double precision, rounded
     /// and clipped to [−2048, 2047]; the reference IDCT's output (rounded,
     /// clipped to [−256, 255]) compared with ours.
-    fn ieee1180_run(l: i64, h: i64, sign: i64) -> Stats {
+    fn ieee1180_run(d: &Dsp, l: i64, h: i64, sign: i64) -> Stats {
         const BLOCKS: usize = 10_000;
         let mut rng = Ieee1180Rand(1);
         let mut err_sum = [0i64; 64];
@@ -285,7 +379,7 @@ mod tests {
             }
             let reference = reference_idct(&cf);
             let mut test = ci;
-            idct(&mut test);
+            idct_on(d, &mut test);
             for i in 0..64 {
                 let r = round_away(reference[i]).clamp(-256, 255);
                 let e = i64::from(test[i]) - r;
@@ -310,18 +404,20 @@ mod tests {
     /// overall mean error ≤ 0.0015.
     #[test]
     fn ieee_1180_accuracy() {
-        for (l, h) in [(256, 255), (5, 5), (300, 300)] {
-            for sign in [1, -1] {
-                let s = ieee1180_run(l, h, sign);
-                eprintln!(
-                    "IEEE 1180 L={l} H={h} sign={sign:+}: peak {} pmse {:.6} omse {:.6} pme {:.6} ome {:.6}",
-                    s.peak, s.pmse, s.omse, s.pme, s.ome
-                );
-                assert!(s.peak <= 1, "peak error {}", s.peak);
-                assert!(s.pmse <= 0.06, "pmse {}", s.pmse);
-                assert!(s.omse <= 0.02, "omse {}", s.omse);
-                assert!(s.pme <= 0.015, "pme {}", s.pme);
-                assert!(s.ome <= 0.0015, "ome {}", s.ome);
+        for d in dsp::rungs() {
+            for (l, h) in [(256, 255), (5, 5), (300, 300)] {
+                for sign in [1, -1] {
+                    let s = ieee1180_run(d, l, h, sign);
+                    eprintln!(
+                        "IEEE 1180 [{}] L={l} H={h} sign={sign:+}: peak {} pmse {:.6} omse {:.6} pme {:.6} ome {:.6}",
+                        d.name, s.peak, s.pmse, s.omse, s.pme, s.ome
+                    );
+                    assert!(s.peak <= 1, "peak error {}", s.peak);
+                    assert!(s.pmse <= 0.06, "pmse {}", s.pmse);
+                    assert!(s.omse <= 0.02, "omse {}", s.omse);
+                    assert!(s.pme <= 0.015, "pme {}", s.pme);
+                    assert!(s.ome <= 0.0015, "ome {}", s.ome);
+                }
             }
         }
     }

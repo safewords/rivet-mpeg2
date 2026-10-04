@@ -29,6 +29,11 @@ impl PicBuf {
         }
     }
 
+    /// A buffer with no samples (a placeholder while one is borrowed out).
+    pub(crate) fn empty() -> PicBuf {
+        PicBuf { planes: [Vec::new(), Vec::new(), Vec::new()], width: 0, height: 0, cwidth: 0, cheight: 0 }
+    }
+
     pub(crate) fn dims(&self, c: usize) -> (usize, usize) {
         if c == 0 { (self.width, self.height) } else { (self.cwidth, self.cheight) }
     }
@@ -164,40 +169,33 @@ fn predict_plane(
         let sy = sy.clamp(0, lines - 1) as usize;
         u32::from(src[(sy * step + line0) * stride + sx])
     };
+    if inside {
+        let s = crate::dsp::McSrc {
+            src,
+            off: (iy as usize * step + line0) * stride + ix as usize,
+            stride: stride * step,
+            w: w as usize,
+            h: h as usize,
+            hx: hx != 0,
+            hy: hy != 0,
+        };
+        (crate::dsp::dsp().mc)(&s, dst, dst_row * dst_stride, dst_step * dst_stride, avg);
+        return;
+    }
     for j in 0..h {
         let drow = (dst_row + j as usize * dst_step) * dst_stride;
         let d = &mut dst[drow..drow + w as usize];
         let sy = iy + j;
-        if inside {
-            let r0 = ((sy as usize) * step + line0) * stride + ix as usize;
-            let r1 = ((sy + hy) as usize * step + line0) * stride + ix as usize;
-            let n = (w + hx) as usize;
-            let a = &src[r0..r0 + n];
-            let b = &src[r1..r1 + n];
-            for i in 0..w as usize {
-                let p = match (hx, hy) {
-                    (0, 0) => u32::from(a[i]),
-                    (1, 0) => (u32::from(a[i]) + u32::from(a[i + 1]) + 1) >> 1,
-                    (0, _) => (u32::from(a[i]) + u32::from(b[i]) + 1) >> 1,
-                    _ => {
-                        (u32::from(a[i]) + u32::from(a[i + 1]) + u32::from(b[i]) + u32::from(b[i + 1]) + 2)
-                            >> 2
-                    }
-                };
-                d[i] = if avg { ((u32::from(d[i]) + p + 1) >> 1) as u8 } else { p as u8 };
-            }
-        } else {
-            for i in 0..w {
-                let sx = ix + i;
-                let p = match (hx, hy) {
-                    (0, 0) => at(sx, sy),
-                    (1, 0) => (at(sx, sy) + at(sx + 1, sy) + 1) >> 1,
-                    (0, _) => (at(sx, sy) + at(sx, sy + 1) + 1) >> 1,
-                    _ => (at(sx, sy) + at(sx + 1, sy) + at(sx, sy + 1) + at(sx + 1, sy + 1) + 2) >> 2,
-                };
-                let di = i as usize;
-                d[di] = if avg { ((u32::from(d[di]) + p + 1) >> 1) as u8 } else { p as u8 };
-            }
+        for i in 0..w {
+            let sx = ix + i;
+            let p = match (hx, hy) {
+                (0, 0) => at(sx, sy),
+                (1, 0) => (at(sx, sy) + at(sx + 1, sy) + 1) >> 1,
+                (0, _) => (at(sx, sy) + at(sx, sy + 1) + 1) >> 1,
+                _ => (at(sx, sy) + at(sx + 1, sy) + at(sx, sy + 1) + at(sx + 1, sy + 1) + 2) >> 2,
+            };
+            let di = i as usize;
+            d[di] = if avg { ((u32::from(d[di]) + p + 1) >> 1) as u8 } else { p as u8 };
         }
     }
 }
