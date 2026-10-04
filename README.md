@@ -123,7 +123,8 @@ is used.
 - **Recorded output.** Every frame of every conformance stream is hashed
   and compared with the output of the original scalar, single-threaded
   decoder — decoded on 1, 2, 3 and 8 threads, with the SIMD kernels and
-  with `MPEG2_FORCE_SCALAR=1` (CI, x86-64 and arm64). The encoder's stream
+  with `MPEG2_FORCE_SCALAR=1` (CI on x86-64; aarch64 by hand, see "NEON on
+  ARM hardware"). The encoder's stream
   for seven configurations (B-pictures, every coding tool, odd sizes, the
   extreme quantisers, the rate control) is compared, bit for bit, with the
   original encoder's on 1, 3 and 8 threads, and the decoder must reproduce
@@ -163,6 +164,22 @@ and decoded again; luma PSNR against the re-encoder's input:
 
 The rate control overshoots its target by 10–20 % over these 30 frames.
 Measured 2026-10-02.
+
+### NEON on ARM hardware
+
+CI runs on x86-64 Linux only, so the NEON (aarch64) code paths are not tested
+there. They are verified by hand on ARM hardware (an aarch64 Linux machine,
+or Apple silicon) after a change to them and before a release:
+
+```sh
+MPEG2_REQUIRE_SIMD=1 cargo test --release
+MPEG2_FORCE_SCALAR=1 cargo test --release
+```
+
+The first run compares the NEON kernels with the scalar code (and fails if
+NEON is not selected); the second runs the whole suite on the scalar code.
+The conformance streams can be run the same way, as the `conformance` job in
+`.github/workflows/ci.yml` does.
 
 ## Speed
 
