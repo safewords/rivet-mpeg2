@@ -37,7 +37,8 @@ fn scale_plane(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: 
             let x1 = (x0 + 1).min(sw - 1);
             let wx = fx - x0 as f64;
             let p = |xx: usize, yy: usize| f64::from(src[yy * sw + xx]);
-            let v = (p(x0, y0) * (1.0 - wx) + p(x1, y0) * wx) * (1.0 - wy) + (p(x0, y1) * (1.0 - wx) + p(x1, y1) * wx) * wy;
+            let v = (p(x0, y0) * (1.0 - wx) + p(x1, y0) * wx) * (1.0 - wy)
+                + (p(x0, y1) * (1.0 - wx) + p(x1, y1) * wx) * wy;
             dst[y * dw + x] = v.round().clamp(0.0, 255.0) as u8;
         }
     }
@@ -49,7 +50,14 @@ fn scale(f: &Frame, w: u32, h: u32) -> Frame {
         let sp = f.planes[c];
         let dp = out.planes[c];
         let src = f.plane(c).to_vec();
-        scale_plane(&src, sp.width as usize, sp.height as usize, out.plane_mut(c), dp.width as usize, dp.height as usize);
+        scale_plane(
+            &src,
+            sp.width as usize,
+            sp.height as usize,
+            out.plane_mut(c),
+            dp.width as usize,
+            dp.height as usize,
+        );
     }
     out
 }
@@ -57,7 +65,9 @@ fn scale(f: &Frame, w: u32, h: u32) -> Frame {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let usage = || -> ! {
-        eprintln!("usage: bench dec <stream> <reps> [threads] | bench enc <src> <w> <h> <frames> <reps> [threads] [out]");
+        eprintln!(
+            "usage: bench dec <stream> <reps> [threads] | bench enc <src> <w> <h> <frames> <reps> [threads] [out]"
+        );
         std::process::exit(2)
     };
     match args.get(1).map(String::as_str) {
@@ -73,13 +83,22 @@ fn main() {
                 best = best.min(t.elapsed().as_secs_f64());
                 n = f.len();
             }
-            println!("dec {} frames threads {threads}: {:.3} ms/frame, {:.1} fps", n, best * 1e3 / n as f64, n as f64 / best);
+            println!(
+                "dec {} frames threads {threads}: {:.3} ms/frame, {:.1} fps",
+                n,
+                best * 1e3 / n as f64,
+                n as f64 / best
+            );
         }
         Some("enc") => {
             let data = std::fs::read(args.get(2).unwrap_or_else(|| usage())).expect("read");
             let w: u32 = args.get(3).unwrap_or_else(|| usage()).parse().expect("w");
             let h: u32 = args.get(4).unwrap_or_else(|| usage()).parse().expect("h");
-            let n: usize = args.get(5).unwrap_or_else(|| usage()).parse().expect("frames");
+            let n: usize = args
+                .get(5)
+                .unwrap_or_else(|| usage())
+                .parse()
+                .expect("frames");
             let reps: usize = args.get(6).map_or(3, |s| s.parse().expect("reps"));
             let threads: usize = args.get(7).map_or(1, |s| s.parse().expect("threads"));
             let src = decode_all(&data, 0);
@@ -87,7 +106,11 @@ fn main() {
             let mut best = f64::INFINITY;
             let mut stream = Vec::new();
             for _ in 0..reps {
-                let cfg = EncoderConfig { threads, frame_rate: (30000, 1001), ..EncoderConfig::new(w, h) };
+                let cfg = EncoderConfig {
+                    threads,
+                    frame_rate: (30000, 1001),
+                    ..EncoderConfig::new(w, h)
+                };
                 let t = Instant::now();
                 let mut enc = Encoder::new(cfg).expect("config");
                 let mut s = Vec::new();

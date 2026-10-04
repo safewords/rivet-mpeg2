@@ -123,7 +123,10 @@ pub(crate) fn decoders() -> &'static Decoders {
             cbp: Vlc::from_table(tables::CODED_BLOCK_PATTERN),
             motion_code: Vlc::build(mc),
             dmvector: Vlc::from_table(tables::DMVECTOR),
-            dc_size: [Vlc::from_table(tables::DC_SIZE_LUMA), Vlc::from_table(tables::DC_SIZE_CHROMA)],
+            dc_size: [
+                Vlc::from_table(tables::DC_SIZE_LUMA),
+                Vlc::from_table(tables::DC_SIZE_CHROMA),
+            ],
             dct: [
                 dct(tables::dct_table_zero().collect(), tables::EOB_ZERO),
                 dct(tables::dct_table_one().collect(), tables::EOB_ONE),
@@ -169,7 +172,10 @@ pub(crate) fn encoders() -> &'static Encoders {
         for &(s, v) in tables::MB_ADDRESS_INCREMENT {
             e.mb_address_increment[v as usize - 1] = parse_code(s);
         }
-        for (i, t) in [tables::MB_TYPE_I, tables::MB_TYPE_P, tables::MB_TYPE_B].iter().enumerate() {
+        for (i, t) in [tables::MB_TYPE_I, tables::MB_TYPE_P, tables::MB_TYPE_B]
+            .iter()
+            .enumerate()
+        {
             for &(s, v) in t.iter() {
                 e.mb_type[i][v as usize] = parse_code(s);
             }
@@ -180,7 +186,10 @@ pub(crate) fn encoders() -> &'static Encoders {
         for &(s, v) in tables::MOTION_CODE {
             e.motion_code[v as usize] = parse_code(s);
         }
-        for (i, t) in [tables::DC_SIZE_LUMA, tables::DC_SIZE_CHROMA].iter().enumerate() {
+        for (i, t) in [tables::DC_SIZE_LUMA, tables::DC_SIZE_CHROMA]
+            .iter()
+            .enumerate()
+        {
             for &(s, v) in t.iter() {
                 e.dc_size[i][v as usize] = parse_code(s);
             }
@@ -209,7 +218,10 @@ impl Encoders {
     /// Writes macroblock_type; `pic` 0 I, 1 P, 2 B.
     pub(crate) fn put_mb_type(&self, w: &mut BitWriter, pic: usize, flags: u8) {
         let (c, n) = self.mb_type[pic][flags as usize];
-        debug_assert!(n > 0, "macroblock_type {flags:#07b} not codable in picture type {pic}");
+        debug_assert!(
+            n > 0,
+            "macroblock_type {flags:#07b} not codable in picture type {pic}"
+        );
         w.put(n, c);
     }
 
@@ -233,7 +245,11 @@ impl Encoders {
         let (c, n) = self.dc_size[usize::from(chroma)][size as usize];
         w.put(n, c);
         if size > 0 {
-            let v = if diff > 0 { diff } else { diff + (1 << size) - 1 };
+            let v = if diff > 0 {
+                diff
+            } else {
+                diff + (1 << size) - 1
+            };
             w.put(size, v as u32);
         }
     }
@@ -331,7 +347,10 @@ mod tests {
             let mut w = BitWriter::new();
             e.put_motion_code(&mut w, m);
             let b = w.finish();
-            assert_eq!(d.motion_code.decode(&mut BitReader::new(&b)), Some(m as i16));
+            assert_eq!(
+                d.motion_code.decode(&mut BitReader::new(&b)),
+                Some(m as i16)
+            );
         }
     }
 
@@ -350,7 +369,11 @@ mod tests {
                     0
                 } else {
                     let v = r.read(size) as i32;
-                    if v >= 1 << (size - 1) { v } else { v + 1 - (1 << size) }
+                    if v >= 1 << (size - 1) {
+                        v
+                    } else {
+                        v + 1 - (1 << size)
+                    }
                 };
                 assert_eq!(got, diff);
             }

@@ -46,7 +46,10 @@ impl McSrc<'_> {
     pub(crate) fn check(&self) {
         assert!(self.w == 8 || self.w == 16, "prediction width {}", self.w);
         assert!(self.h > 0);
-        let last = self.off + (self.h - 1 + usize::from(self.hy)) * self.stride + self.w + usize::from(self.hx);
+        let last = self.off
+            + (self.h - 1 + usize::from(self.hy)) * self.stride
+            + self.w
+            + usize::from(self.hx);
         assert!(last <= self.src.len(), "prediction block outside its plane");
     }
 }
@@ -62,7 +65,10 @@ pub(crate) fn check_block8(len: usize, off: usize, stride: usize) {
 /// repeated), is inside a buffer of `len` bytes.
 #[inline]
 pub(crate) fn check_block16(len: usize, off: usize, stride: usize) {
-    assert!(off + 15 * stride + 16 <= len, "16x16 block outside its buffer");
+    assert!(
+        off + 15 * stride + 16 <= len,
+        "16x16 block outside its buffer"
+    );
 }
 
 /// A 16×16 block: its first sample at `off` in `buf`, rows `stride` apart
@@ -135,8 +141,13 @@ pub(crate) fn rungs() -> Vec<&'static Dsp> {
 pub(crate) fn dsp() -> &'static Dsp {
     static D: OnceLock<&'static Dsp> = OnceLock::new();
     D.get_or_init(|| {
-        let force = std::env::var_os("MPEG2_FORCE_SCALAR").is_some_and(|v| v != "0" && !v.is_empty());
-        if force { &SCALAR } else { rungs().pop().expect("the scalar rung") }
+        let force =
+            std::env::var_os("MPEG2_FORCE_SCALAR").is_some_and(|v| v != "0" && !v.is_empty());
+        if force {
+            &SCALAR
+        } else {
+            rungs().pop().expect("the scalar rung")
+        }
     })
 }
 
@@ -176,7 +187,13 @@ pub(crate) fn live_extent(input: &[i32; 64]) -> (usize, bool) {
 /// order of `v`). A row of zero coefficients is skipped in both passes: its
 /// row-pass sums are +0 exactly, and adding ±0 to a sum that started at +0
 /// leaves it unchanged, so the skip changes no result.
-pub(crate) fn transform_scalar(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+pub(crate) fn transform_scalar(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     let mut tmp = [[0.0f64; 8]; 8];
     let mut live = [false; 8];
     for v in 0..8 {
@@ -223,10 +240,19 @@ pub(crate) fn mc_scalar(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, av
                 (true, false) => (u32::from(a[i]) + u32::from(a[i + 1]) + 1) >> 1,
                 (false, true) => (u32::from(a[i]) + u32::from(b[i]) + 1) >> 1,
                 (true, true) => {
-                    (u32::from(a[i]) + u32::from(a[i + 1]) + u32::from(b[i]) + u32::from(b[i + 1]) + 2) >> 2
+                    (u32::from(a[i])
+                        + u32::from(a[i + 1])
+                        + u32::from(b[i])
+                        + u32::from(b[i + 1])
+                        + 2)
+                        >> 2
                 }
             };
-            d[i] = if avg { ((u32::from(d[i]) + p + 1) >> 1) as u8 } else { p as u8 };
+            d[i] = if avg {
+                ((u32::from(d[i]) + p + 1) >> 1) as u8
+            } else {
+                p as u8
+            };
         }
     }
 }
@@ -314,7 +340,10 @@ mod tests {
             } else {
                 "scalar"
             };
-            assert!(names.contains(&want), "MPEG2_REQUIRE_SIMD: rung {want} missing from {names:?}");
+            assert!(
+                names.contains(&want),
+                "MPEG2_REQUIRE_SIMD: rung {want} missing from {names:?}"
+            );
         }
     }
 
@@ -325,7 +354,19 @@ mod tests {
             let x = (r.next() as i64 >> 24) as f64 / 4096.0 * f64::from(r.range(0, 3));
             assert_eq!(round_away(x), x.round() as i32, "{x}");
         }
-        for x in [0.5, -0.5, 1.5, -1.5, 2.5, 0.49999999999999994, -0.49999999999999994, 0.0, -0.0, 255.5, -256.5] {
+        for x in [
+            0.5,
+            -0.5,
+            1.5,
+            -1.5,
+            2.5,
+            0.49999999999999994,
+            -0.49999999999999994,
+            0.0,
+            -0.0,
+            255.5,
+            -256.5,
+        ] {
             assert_eq!(round_away(x), x.round() as i32, "{x}");
         }
     }
@@ -354,7 +395,9 @@ mod tests {
                         }
                     }
                 }
-                _ => b.iter_mut().for_each(|c| *c = if r.next() & 1 == 0 { -2048 } else { 2047 }),
+                _ => b
+                    .iter_mut()
+                    .for_each(|c| *c = if r.next() & 1 == 0 { -2048 } else { 2047 }),
             }
             out.push(b);
         }
@@ -367,8 +410,11 @@ mod tests {
     #[test]
     fn transforms_match_the_scalar_code() {
         let bt = transpose(&BASIS);
-        let sets: [(&[[f64; 8]; 8], i32, i32); 3] =
-            [(&BASIS, -256, 255), (&bt, i32::MIN, i32::MAX), (&BASIS, i32::MIN, i32::MAX)];
+        let sets: [(&[[f64; 8]; 8], i32, i32); 3] = [
+            (&BASIS, -256, 255),
+            (&bt, i32::MIN, i32::MAX),
+            (&BASIS, i32::MIN, i32::MAX),
+        ];
         let blocks = blocks();
         for d in rungs() {
             for &(m, lo, hi) in &sets {
@@ -387,7 +433,15 @@ mod tests {
     fn motion_compensation_matches_the_scalar_code() {
         let mut r = Rng::new(42);
         let stride = 64;
-        let src: Vec<u8> = (0..stride * 40).map(|i| if i % 7 == 0 { 255 } else { (r.next() & 255) as u8 }).collect();
+        let src: Vec<u8> = (0..stride * 40)
+            .map(|i| {
+                if i % 7 == 0 {
+                    255
+                } else {
+                    (r.next() & 255) as u8
+                }
+            })
+            .collect();
         for d in rungs() {
             for _ in 0..4000 {
                 let w = if r.next() & 1 == 0 { 8 } else { 16 };
@@ -396,7 +450,15 @@ mod tests {
                 let step = r.range(1, 2) as usize;
                 let x = r.range(0, (stride - w - 1) as i32) as usize;
                 let y = r.range(0, (40 / step - h - 1) as i32) as usize;
-                let s = McSrc { src: &src, off: y * step * stride + x, stride: stride * step, w, h, hx, hy };
+                let s = McSrc {
+                    src: &src,
+                    off: y * step * stride + x,
+                    stride: stride * step,
+                    w,
+                    h,
+                    hx,
+                    hy,
+                };
                 let avg = r.next() & 1 == 0;
                 let dstride = 16 * r.range(1, 2) as usize;
                 let init: Vec<u8> = (0..16 * 34).map(|_| (r.next() & 255) as u8).collect();
@@ -404,7 +466,11 @@ mod tests {
                 let (mut want, mut got) = (init.clone(), init);
                 mc_scalar(&s, &mut want, doff, dstride, avg);
                 (d.mc)(&s, &mut got, doff, dstride, avg);
-                assert_eq!(got, want, "{}: w {w} h {h} hx {hx} hy {hy} avg {avg}", d.name);
+                assert_eq!(
+                    got, want,
+                    "{}: w {w} h {h} hx {hx} hy {hy} avg {avg}",
+                    d.name
+                );
             }
         }
     }
@@ -415,10 +481,16 @@ mod tests {
         for d in rungs() {
             for i in 0..5000 {
                 let mut res = [0i32; 64];
-                let (lo, hi) = if i % 3 == 0 { (-256, 255) } else { (-2048, 2047) };
+                let (lo, hi) = if i % 3 == 0 {
+                    (-256, 255)
+                } else {
+                    (-2048, 2047)
+                };
                 res.iter_mut().for_each(|c| *c = r.range(lo, hi));
                 let stride = 8 * r.range(1, 4) as usize;
-                let init: Vec<u8> = (0..stride * 8 + 8).map(|_| (r.next() & 255) as u8).collect();
+                let init: Vec<u8> = (0..stride * 8 + 8)
+                    .map(|_| (r.next() & 255) as u8)
+                    .collect();
                 let off = r.range(0, 8) as usize;
                 let (mut want, mut got) = (init.clone(), init.clone());
                 add_block_scalar(&mut want, off, stride, &res);
@@ -444,8 +516,24 @@ mod tests {
             for _ in 0..20_000 {
                 let (ao, bo) = (r.range(0, 24 * 80) as usize, r.range(0, 24 * 80) as usize);
                 let bs = [0, 16, 80][r.range(0, 2) as usize];
-                let limit = [u32::MAX, 0, r.range(0, 20_000) as u32, r.range(0, 9000) as u32][r.range(0, 3) as usize];
-                let (x, y) = (Blk { buf: &a, off: ao, stride: 80 }, Blk { buf: &b, off: bo, stride: bs });
+                let limit = [
+                    u32::MAX,
+                    0,
+                    r.range(0, 20_000) as u32,
+                    r.range(0, 9000) as u32,
+                ][r.range(0, 3) as usize];
+                let (x, y) = (
+                    Blk {
+                        buf: &a,
+                        off: ao,
+                        stride: 80,
+                    },
+                    Blk {
+                        buf: &b,
+                        off: bo,
+                        stride: bs,
+                    },
+                );
                 let want = sad16_scalar(x, y, limit);
                 assert_eq!((d.sad16)(x, y, limit), want, "{}", d.name);
                 // The full sum below the limit; a partial one reaching it.
@@ -453,7 +541,18 @@ mod tests {
                 assert!(want == full || (want >= limit && want <= full));
             }
             // The largest sum: 256 × 255.
-            let (x, y) = (Blk { buf: &a2, off: 0, stride: 0 }, Blk { buf: &b, off: 0, stride: 0 });
+            let (x, y) = (
+                Blk {
+                    buf: &a2,
+                    off: 0,
+                    stride: 0,
+                },
+                Blk {
+                    buf: &b,
+                    off: 0,
+                    stride: 0,
+                },
+            );
             assert_eq!((d.sad16)(x, y, u32::MAX), 256 * 255, "{}", d.name);
         }
     }

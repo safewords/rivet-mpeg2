@@ -62,9 +62,17 @@ pub fn synthetic(width: u32, height: u32, t: u32) -> Frame {
 pub fn psnr(a: &Frame, b: &Frame, i: usize) -> f64 {
     let (pa, pb) = (a.plane(i), b.plane(i));
     assert_eq!(pa.len(), pb.len());
-    let mse: f64 =
-        pa.iter().zip(pb).map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2)).sum::<f64>() / pa.len() as f64;
-    if mse == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 / mse).log10() }
+    let mse: f64 = pa
+        .iter()
+        .zip(pb)
+        .map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2))
+        .sum::<f64>()
+        / pa.len() as f64;
+    if mse == 0.0 {
+        99.0
+    } else {
+        10.0 * (255.0f64 * 255.0 / mse).log10()
+    }
 }
 
 /// Encodes `frames`, returning the stream.

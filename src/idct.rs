@@ -393,7 +393,10 @@ mod tests {
             peak,
             pmse: err_sq.iter().map(|&s| s as f64 / n).fold(0.0, f64::max),
             omse: err_sq.iter().sum::<i64>() as f64 / (n * 64.0),
-            pme: err_sum.iter().map(|&s| (s as f64 / n).abs()).fold(0.0, f64::max),
+            pme: err_sum
+                .iter()
+                .map(|&s| (s as f64 / n).abs())
+                .fold(0.0, f64::max),
             ome: (err_sum.iter().sum::<i64>() as f64 / (n * 64.0)).abs(),
         }
     }

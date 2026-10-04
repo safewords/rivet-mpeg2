@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 /// where a README rounds (ntr_skipped_v3: 60 coded, "19 + 19 + 21";
 /// tcela-14: 61, "60"; mei_2stream.60f.new: 61, "60"; bits_conf_lep_11:
 /// I, P, B, "4 frames").
+#[rustfmt::skip]
 const STREAMS: &[(&str, usize, u32, u32, ChromaFormat)] = {
     use ChromaFormat::{Yuv420 as C420, Yuv422 as C422};
     &[
@@ -91,7 +92,9 @@ fn suite() -> Option<PathBuf> {
                 std::env::var_os("MPEG2_REQUIRE_CONFORMANCE").is_none(),
                 "MPEG2_REQUIRE_CONFORMANCE is set but MPEG2_CONFORMANCE_DIR is not"
             );
-            eprintln!("conformance: MPEG2_CONFORMANCE_DIR not set; run tools/fetch-conformance.sh — NOT RUN");
+            eprintln!(
+                "conformance: MPEG2_CONFORMANCE_DIR not set; run tools/fetch-conformance.sh — NOT RUN"
+            );
             None
         }
     }
@@ -102,9 +105,15 @@ fn decode_file(path: &Path) -> Vec<Frame> {
     let mut dec = Decoder::new();
     let mut frames = Vec::new();
     for chunk in data.chunks(65536) {
-        frames.extend(dec.decode(chunk).unwrap_or_else(|e| panic!("{}: {e}", path.display())));
+        frames.extend(
+            dec.decode(chunk)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+        );
     }
-    frames.extend(dec.flush().unwrap_or_else(|e| panic!("{}: {e}", path.display())));
+    frames.extend(
+        dec.flush()
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+    );
     frames
 }
 
@@ -116,10 +125,17 @@ fn every_stream_decodes_to_its_frame_count() {
         let frames = decode_file(&dir.join(path));
         assert_eq!(frames.len(), n, "{path}: frame count");
         let last = frames.last().unwrap();
-        assert_eq!((last.width, last.height, last.chroma), (w, h, chroma), "{path}");
+        assert_eq!(
+            (last.width, last.height, last.chroma),
+            (w, h, chroma),
+            "{path}"
+        );
         total += frames.len();
     }
-    eprintln!("conformance: {} streams, {total} frames decoded", STREAMS.len());
+    eprintln!(
+        "conformance: {} streams, {total} frames decoded",
+        STREAMS.len()
+    );
 }
 
 /// The reconstructed macroblocks of a trace: (picture in decoding order,
@@ -147,12 +163,22 @@ fn trace_macroblocks(text: &str, width: u32) -> Vec<(usize, u32, u32, Vec<u8>)> 
         } else if t.starts_with("Reconstructed") {
             let mut samples = Vec::with_capacity(256);
             while samples.len() < 256 {
-                let row: Vec<u8> = lines.next().unwrap().split_whitespace().map(|v| v.parse().unwrap()).collect();
+                let row: Vec<u8> = lines
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .map(|v| v.parse().unwrap())
+                    .collect();
                 if row.len() == 16 {
                     samples.extend(row);
                 }
             }
-            out.push((pic.expect("picture header before macroblocks"), x, y, samples));
+            out.push((
+                pic.expect("picture header before macroblocks"),
+                x,
+                y,
+                samples,
+            ));
         }
     }
     out
@@ -171,7 +197,13 @@ fn check_trace(dir: &Path, stream: &str, trace: &str, expect_mbs: usize) {
         for j in 0..16 {
             for i in 0..16 {
                 let got = f.plane(0)[(*y as usize + j) * w + *x as usize + i];
-                assert_eq!(got, samples[j * 16 + i], "{stream}: picture {pic}, sample ({}, {})", *x as usize + i, *y as usize + j);
+                assert_eq!(
+                    got,
+                    samples[j * 16 + i],
+                    "{stream}: picture {pic}, sample ({}, {})",
+                    *x as usize + i,
+                    *y as usize + j
+                );
                 compared += 1;
             }
         }
@@ -210,12 +242,20 @@ fn nokia6_dual_matches_its_trace() {
 fn chroma_dct_type_is_not_applied_to_420_chroma() {
     let Some(dir) = suite() else { return };
     let f = decode_file(&dir.join("main-profile/chromatic/chroma_dct_type-1/test.mpg"));
-    let wrong = std::fs::read(dir.join("main-profile/chromatic/chroma_dct_type-1/wrong.decoded")).expect("wrong.decoded");
+    let wrong = std::fs::read(dir.join("main-profile/chromatic/chroma_dct_type-1/wrong.decoded"))
+        .expect("wrong.decoded");
     assert_eq!(wrong.len(), f[0].data.len());
     let luma = f[0].plane(0).len();
     assert_eq!(&wrong[..luma], f[0].plane(0));
-    let differ = wrong[luma..].iter().zip(&f[0].data[luma..]).filter(|(a, b)| a != b).count();
-    assert!(differ > (wrong.len() - luma) / 2, "chroma differs from the wrong decode in {differ} samples");
+    let differ = wrong[luma..]
+        .iter()
+        .zip(&f[0].data[luma..])
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(
+        differ > (wrong.len() - luma) / 2,
+        "chroma differs from the wrong decode in {differ} samples"
+    );
 }
 
 /// The encoder on natural pictures: the first 12 frames of tcela-7 (Mobile &
@@ -225,8 +265,10 @@ fn chroma_dct_type_is_not_applied_to_420_chroma() {
 fn encoder_on_natural_pictures() {
     use mpeg2::{Encoder, EncoderConfig, RateControl};
     let Some(dir) = suite() else { return };
-    let src: Vec<Frame> =
-        decode_file(&dir.join("main-profile/tcela/tcela-7-slices/tcela-7.bits")).into_iter().take(12).collect();
+    let src: Vec<Frame> = decode_file(&dir.join("main-profile/tcela/tcela-7-slices/tcela-7.bits"))
+        .into_iter()
+        .take(12)
+        .collect();
     let (w, h) = (src[0].width, src[0].height);
     let cfg = EncoderConfig {
         rate_control: RateControl::ConstantQuantiser(6),
@@ -242,12 +284,25 @@ fn encoder_on_natural_pictures() {
     let out = decode_file_bytes(&stream);
     assert_eq!(out.len(), src.len());
     let psnr = |a: &[u8], b: &[u8]| {
-        let mse = a.iter().zip(b).map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2)).sum::<f64>() / a.len() as f64;
+        let mse = a
+            .iter()
+            .zip(b)
+            .map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2))
+            .sum::<f64>()
+            / a.len() as f64;
         10.0 * (255.0f64 * 255.0 / mse).log10()
     };
-    let y = src.iter().zip(&out).map(|(a, b)| psnr(a.plane(0), b.plane(0))).sum::<f64>() / src.len() as f64;
+    let y = src
+        .iter()
+        .zip(&out)
+        .map(|(a, b)| psnr(a.plane(0), b.plane(0)))
+        .sum::<f64>()
+        / src.len() as f64;
     let rate = stream.len() as f64 * 8.0 * 30000.0 / 1001.0 / src.len() as f64;
-    eprintln!("conformance: tcela-7 re-encoded at q 6: {:.2} Mb/s, luma PSNR {y:.2} dB", rate / 1e6);
+    eprintln!(
+        "conformance: tcela-7 re-encoded at q 6: {:.2} Mb/s, luma PSNR {y:.2} dB",
+        rate / 1e6
+    );
     assert!(y > 35.5, "luma PSNR {y:.2}");
 }
 
@@ -269,7 +324,11 @@ fn frames_hash(frames: &[Frame]) -> u64 {
     for f in frames {
         eat(&f.width.to_le_bytes());
         eat(&f.height.to_le_bytes());
-        eat(&[f.progressive_frame as u8, f.top_field_first as u8, f.repeat_first_field as u8]);
+        eat(&[
+            f.progressive_frame as u8,
+            f.top_field_first as u8,
+            f.repeat_first_field as u8,
+        ]);
         eat(&f.data);
     }
     h
@@ -281,6 +340,7 @@ fn frames_hash(frames: &[Frame]) -> u64 {
 /// traces). Any change to a single sample of any frame of any stream — from
 /// a kernel, a processor, the thread count — fails here. CI runs this with
 /// the SIMD kernels and again with `MPEG2_FORCE_SCALAR=1`.
+#[rustfmt::skip]
 const HASHES: &[(&str, u64)] = &[
     ("422-profile/hhi/hhi_burst_422/hhi_burst_422_long.bits", 0xf5a9192a93f058a6),
     ("422-profile/hhi/hhi_burst_422/hhi_burst_422_short.bits", 0xf58c7c7b0bddde91),
@@ -346,7 +406,10 @@ fn every_stream_decodes_to_its_recorded_frames() {
     let Some(dir) = suite() else { return };
     let print = std::env::var_os("MPEG2_PRINT_HASHES").is_some();
     let threads: Vec<usize> = match std::env::var("MPEG2_TEST_THREADS") {
-        Ok(v) => v.split(',').map(|t| t.parse().expect("MPEG2_TEST_THREADS")).collect(),
+        Ok(v) => v
+            .split(',')
+            .map(|t| t.parse().expect("MPEG2_TEST_THREADS"))
+            .collect(),
         Err(_) => vec![1, 4],
     };
     let mut failed = Vec::new();
@@ -359,14 +422,27 @@ fn every_stream_decodes_to_its_recorded_frames() {
                 println!("    (\"{path}\", {h:#018x}),");
                 break;
             }
-            let want = HASHES.iter().find(|e| e.0 == path).unwrap_or_else(|| panic!("{path}: no recorded hash")).1;
+            let want = HASHES
+                .iter()
+                .find(|e| e.0 == path)
+                .unwrap_or_else(|| panic!("{path}: no recorded hash"))
+                .1;
             if h != want {
-                failed.push(format!("{path} (threads {t}): {h:#018x}, recorded {want:#018x}"));
+                failed.push(format!(
+                    "{path} (threads {t}): {h:#018x}, recorded {want:#018x}"
+                ));
             }
         }
     }
-    assert!(failed.is_empty(), "decoded frames differ:\n{}", failed.join("\n"));
-    eprintln!("conformance: {} streams x threads {threads:?}: every frame as recorded", STREAMS.len());
+    assert!(
+        failed.is_empty(),
+        "decoded frames differ:\n{}",
+        failed.join("\n")
+    );
+    eprintln!(
+        "conformance: {} streams x threads {threads:?}: every frame as recorded",
+        STREAMS.len()
+    );
 }
 
 fn decode_threads(data: &[u8], threads: usize) -> Vec<Frame> {

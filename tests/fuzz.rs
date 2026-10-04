@@ -14,7 +14,11 @@ use std::sync::OnceLock;
 fn sample_stream() -> &'static [u8] {
     static S: OnceLock<Vec<u8>> = OnceLock::new();
     S.get_or_init(|| {
-        let cfg = EncoderConfig { b_frames: 2, gop_size: 4, ..EncoderConfig::new(48, 32) };
+        let cfg = EncoderConfig {
+            b_frames: 2,
+            gop_size: 4,
+            ..EncoderConfig::new(48, 32)
+        };
         let frames: Vec<_> = (0..6).map(|t| synthetic(48, 32, t)).collect();
         encode(cfg, &frames)
     })
@@ -41,7 +45,10 @@ fn feed(data: &[u8], chunk: usize) -> usize {
 fn outcomes(data: &[u8], chunk: usize, threads: usize) -> Vec<Result<Vec<mpeg2::Frame>, String>> {
     let mut dec = Decoder::new();
     dec.set_threads(threads);
-    let mut out: Vec<_> = data.chunks(chunk.max(1)).map(|c| dec.decode(c).map_err(|e| e.to_string())).collect();
+    let mut out: Vec<_> = data
+        .chunks(chunk.max(1))
+        .map(|c| dec.decode(c).map_err(|e| e.to_string()))
+        .collect();
     out.push(dec.flush().map_err(|e| e.to_string()));
     out
 }
@@ -52,15 +59,24 @@ fn outcomes(data: &[u8], chunk: usize, threads: usize) -> Vec<Result<Vec<mpeg2::
 fn same_on_threads(data: &[u8], chunk: usize) {
     let one = outcomes(data, chunk, 1);
     for t in [2, 3, 8] {
-        assert!(outcomes(data, chunk, t) == one, "{t} threads differ from one");
+        assert!(
+            outcomes(data, chunk, t) == one,
+            "{t} threads differ from one"
+        );
     }
 }
 
 /// 256 cases unless PROPTEST_CASES says otherwise (e.g. 20000 for a long
 /// local run in release with overflow checks).
 fn config() -> ProptestConfig {
-    let cases = std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
-    ProptestConfig { cases, ..ProptestConfig::default() }
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256);
+    ProptestConfig {
+        cases,
+        ..ProptestConfig::default()
+    }
 }
 
 /// A start-code value biased toward the ones that change decoder state:
@@ -183,8 +199,17 @@ fn recovers_after_garbage() {
 fn an_error_mid_stream_loses_no_frames() {
     let mut data = sample_stream().to_vec();
     // Garbage in the first slice of the third picture.
-    let pics: Vec<usize> = data.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
-    let slice = pics[2] + data[pics[2]..].windows(4).position(|w| w == [0, 0, 1, 1]).unwrap();
+    let pics: Vec<usize> = data
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1, 0])
+        .map(|(i, _)| i)
+        .collect();
+    let slice = pics[2]
+        + data[pics[2]..]
+            .windows(4)
+            .position(|w| w == [0, 0, 1, 1])
+            .unwrap();
     for b in &mut data[slice + 5..slice + 12] {
         *b = 0xff;
     }
@@ -233,13 +258,26 @@ fn regression_cut_and_spliced_empty_index() {
 #[test]
 fn a_size_change_mid_picture_does_not_panic() {
     let s = sample_stream();
-    let seq_ext = s.windows(5).position(|w| w[..4] == [0, 0, 1, 0xb5] && w[4] >> 4 == 1).unwrap();
+    let seq_ext = s
+        .windows(5)
+        .position(|w| w[..4] == [0, 0, 1, 0xb5] && w[4] >> 4 == 1)
+        .unwrap();
     let mut ext = s[seq_ext..seq_ext + 10].to_vec();
     ext[5] |= 0x01; // horizontal_size_extension's high bit: 8192 wider
-    let pics: Vec<usize> = s.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
+    let pics: Vec<usize> = s
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1, 0])
+        .map(|(i, _)| i)
+        .collect();
     for &p in &pics {
         let slice = p + s[p..].windows(4).position(|w| w == [0, 0, 1, 1]).unwrap();
-        let after = slice + 4 + s[slice + 4..].windows(3).position(|w| w == [0, 0, 1]).unwrap();
+        let after = slice
+            + 4
+            + s[slice + 4..]
+                .windows(3)
+                .position(|w| w == [0, 0, 1])
+                .unwrap();
         let mut data = s[..after].to_vec();
         data.extend(&ext);
         data.extend(&s[after..]);
@@ -255,12 +293,24 @@ fn a_size_change_mid_picture_does_not_panic() {
 /// frames must still be those of one thread.
 #[test]
 fn slices_out_of_order_decode_the_same_on_threads() {
-    let cfg = EncoderConfig { b_frames: 1, gop_size: 4, ..EncoderConfig::new(64, 96) };
+    let cfg = EncoderConfig {
+        b_frames: 1,
+        gop_size: 4,
+        ..EncoderConfig::new(64, 96)
+    };
     let frames: Vec<_> = (0..5).map(|t| synthetic(64, 96, t)).collect();
     let s = encode(cfg, &frames);
-    let starts: Vec<usize> = s.windows(3).enumerate().filter(|(_, w)| *w == [0, 0, 1]).map(|(i, _)| i).collect();
-    let units: Vec<&[u8]> =
-        starts.iter().enumerate().map(|(k, &a)| &s[a..starts.get(k + 1).copied().unwrap_or(s.len())]).collect();
+    let starts: Vec<usize> = s
+        .windows(3)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1])
+        .map(|(i, _)| i)
+        .collect();
+    let units: Vec<&[u8]> = starts
+        .iter()
+        .enumerate()
+        .map(|(k, &a)| &s[a..starts.get(k + 1).copied().unwrap_or(s.len())])
+        .collect();
     let is_slice = |u: &[u8]| (1..=0xaf).contains(&u[3]);
     let mut data = Vec::new();
     let mut run: Vec<&[u8]> = Vec::new();
@@ -284,7 +334,9 @@ fn slices_out_of_order_decode_the_same_on_threads() {
     }
     // And the same frames as the stream in order: every row's last write is
     // its own slice's.
-    let all = |o: Vec<Result<Vec<mpeg2::Frame>, String>>| o.into_iter().flat_map(Result::unwrap).collect::<Vec<_>>();
+    let all = |o: Vec<Result<Vec<mpeg2::Frame>, String>>| {
+        o.into_iter().flat_map(Result::unwrap).collect::<Vec<_>>()
+    };
     let (ordered, one) = (all(outcomes(&s, s.len(), 1)), all(one));
     assert_eq!(ordered.len(), 5);
     assert!(ordered == one);

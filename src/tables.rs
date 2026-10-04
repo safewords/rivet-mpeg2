@@ -471,7 +471,11 @@ pub(crate) const NON_LINEAR_QSCALE: [u8; 32] = [
 /// quantiser_scale for a quantiser_scale_code (Table 7-6).
 #[inline]
 pub(crate) fn quantiser_scale(q_scale_type: bool, code: u8) -> i32 {
-    if q_scale_type { i32::from(NON_LINEAR_QSCALE[code as usize & 31]) } else { 2 * i32::from(code) }
+    if q_scale_type {
+        i32::from(NON_LINEAR_QSCALE[code as usize & 31])
+    } else {
+        2 * i32::from(code)
+    }
 }
 
 /// Table 6-4: frame_rate_value as a fraction, by frame_rate_code (1..=8).
@@ -520,8 +524,13 @@ mod tests {
         for (i, &(a, la)) in codes.iter().enumerate() {
             for (j, &(b, lb)) in codes.iter().enumerate() {
                 if i != j && la <= lb {
-                    assert_ne!(b >> (lb - la), a, "code {a:0la$b} is a prefix of {b:0lb$b}",
-                        la = la as usize, lb = lb as usize);
+                    assert_ne!(
+                        b >> (lb - la),
+                        a,
+                        "code {a:0la$b} is a prefix of {b:0lb$b}",
+                        la = la as usize,
+                        lb = lb as usize
+                    );
                 }
             }
         }
@@ -529,7 +538,10 @@ mod tests {
 
     #[test]
     fn macroblock_address_increment_is_prefix_free_and_complete() {
-        let mut codes: Vec<_> = MB_ADDRESS_INCREMENT.iter().map(|r| parse_code(r.0)).collect();
+        let mut codes: Vec<_> = MB_ADDRESS_INCREMENT
+            .iter()
+            .map(|r| parse_code(r.0))
+            .collect();
         codes.push(MB_ESCAPE);
         codes.push(MB_STUFFING);
         prefix_free(&codes);
@@ -541,7 +553,11 @@ mod tests {
 
     #[test]
     fn macroblock_type_tables_are_complete_prefix_codes() {
-        for (t, missing) in [(MB_TYPE_I, 1u64 << 22), (MB_TYPE_P, 1 << 18), (MB_TYPE_B, 1 << 18)] {
+        for (t, missing) in [
+            (MB_TYPE_I, 1u64 << 22),
+            (MB_TYPE_P, 1 << 18),
+            (MB_TYPE_B, 1 << 18),
+        ] {
             let codes: Vec<_> = t.iter().map(|r| parse_code(r.0)).collect();
             prefix_free(&codes);
             // Each table leaves exactly the all-zeros code of its longest
@@ -552,7 +568,10 @@ mod tests {
 
     #[test]
     fn coded_block_pattern_covers_0_to_63_once() {
-        let codes: Vec<_> = CODED_BLOCK_PATTERN.iter().map(|r| parse_code(r.0)).collect();
+        let codes: Vec<_> = CODED_BLOCK_PATTERN
+            .iter()
+            .map(|r| parse_code(r.0))
+            .collect();
         prefix_free(&codes);
         let mut seen = [false; 64];
         for r in CODED_BLOCK_PATTERN {
@@ -573,8 +592,16 @@ mod tests {
             let (c, n) = parse_code(MOTION_CODE[m as usize].0);
             let pos = (c << 1, n + 1);
             let neg = ((c << 1) | 1, n + 1);
-            assert_eq!(parse_code(MB_ADDRESS_INCREMENT[(2 * m) as usize].0), pos, "+{m}");
-            assert_eq!(parse_code(MB_ADDRESS_INCREMENT[(2 * m - 1) as usize].0), neg, "-{m}");
+            assert_eq!(
+                parse_code(MB_ADDRESS_INCREMENT[(2 * m) as usize].0),
+                pos,
+                "+{m}"
+            );
+            assert_eq!(
+                parse_code(MB_ADDRESS_INCREMENT[(2 * m - 1) as usize].0),
+                neg,
+                "-{m}"
+            );
         }
     }
 
@@ -659,8 +686,12 @@ mod tests {
         // direction, starting rightwards along the top row.
         let mut zz = Vec::new();
         for d in 0..15i32 {
-            let mut diag: Vec<(i32, i32)> =
-                (0..8).filter_map(|v| { let u = d - v; (0..8).contains(&u).then_some((v, u)) }).collect();
+            let mut diag: Vec<(i32, i32)> = (0..8)
+                .filter_map(|v| {
+                    let u = d - v;
+                    (0..8).contains(&u).then_some((v, u))
+                })
+                .collect();
             if d % 2 == 0 {
                 diag.reverse(); // v decreasing: up and to the right
             }

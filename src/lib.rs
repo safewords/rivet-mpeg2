@@ -64,8 +64,8 @@
 #![warn(missing_docs)]
 
 pub(crate) mod bits;
-mod dsp;
 mod decoder;
+mod dsp;
 mod encoder;
 mod error;
 mod frame;
@@ -95,7 +95,10 @@ pub mod __bench {
     use crate::dsp::{self, Dsp, McSrc};
 
     fn rung(name: &str) -> &'static Dsp {
-        dsp::rungs().into_iter().find(|d| d.name == name).expect("no such rung on this processor")
+        dsp::rungs()
+            .into_iter()
+            .find(|d| d.name == name)
+            .expect("no such rung on this processor")
     }
 
     /// The rungs this processor runs, scalar first.
@@ -134,10 +137,35 @@ pub mod __bench {
     /// One `w`-wide, `h`-high prediction per source offset, into `dst`
     /// (stride `w`).
     #[allow(clippy::too_many_arguments)]
-    pub fn mc(name: &str, src: &[u8], stride: usize, offs: &[usize], w: usize, h: usize, hx: bool, hy: bool, avg: bool, dst: &mut [u8]) {
+    pub fn mc(
+        name: &str,
+        src: &[u8],
+        stride: usize,
+        offs: &[usize],
+        w: usize,
+        h: usize,
+        hx: bool,
+        hy: bool,
+        avg: bool,
+        dst: &mut [u8],
+    ) {
         let d = rung(name);
         for &off in offs {
-            (d.mc)(&McSrc { src, off, stride, w, h, hx, hy }, dst, 0, w, avg);
+            (d.mc)(
+                &McSrc {
+                    src,
+                    off,
+                    stride,
+                    w,
+                    h,
+                    hx,
+                    hy,
+                },
+                dst,
+                0,
+                w,
+                avg,
+            );
         }
     }
 
@@ -154,7 +182,23 @@ pub mod __bench {
     /// strides `stride`); returns their sum.
     pub fn sad16(name: &str, a: &[u8], b: &[u8], stride: usize, offs: &[usize]) -> u64 {
         let d = rung(name);
-        let a = dsp::Blk { buf: a, off: 0, stride };
-        offs.iter().map(|&o| u64::from((d.sad16)(a, dsp::Blk { buf: b, off: o, stride }, u32::MAX))).sum()
+        let a = dsp::Blk {
+            buf: a,
+            off: 0,
+            stride,
+        };
+        offs.iter()
+            .map(|&o| {
+                u64::from((d.sad16)(
+                    a,
+                    dsp::Blk {
+                        buf: b,
+                        off: o,
+                        stride,
+                    },
+                    u32::MAX,
+                ))
+            })
+            .sum()
     }
 }

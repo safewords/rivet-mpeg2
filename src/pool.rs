@@ -100,7 +100,9 @@ impl Pool {
         // function does not return — nor unwind: the guard below waits in
         // its drop — before every worker taking part has reported it. So `f`
         // outlives every use.
-        let job = Job(unsafe { std::mem::transmute::<*const (dyn Fn() + Sync + '_), *const (dyn Fn() + Sync)>(f) });
+        let job = Job(unsafe {
+            std::mem::transmute::<*const (dyn Fn() + Sync + '_), *const (dyn Fn() + Sync)>(f)
+        });
         {
             let mut st = self.shared.lock();
             st.job = Some(job);

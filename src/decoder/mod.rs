@@ -9,8 +9,8 @@ use crate::bits::BitReader;
 use crate::error::{Error, Result, invalid, unsupported};
 use crate::frame::{ChromaFormat, Frame, PictureType, Plane};
 use crate::headers::*;
-use crate::tables::{DEFAULT_INTRA_MATRIX, DEFAULT_NON_INTRA_MATRIX, frame_rate_value};
 use crate::pool::{self, Pool};
+use crate::tables::{DEFAULT_INTRA_MATRIX, DEFAULT_NON_INTRA_MATRIX, frame_rate_value};
 use mc::PicBuf;
 use slice::Params;
 
@@ -214,7 +214,9 @@ impl Decoder {
     /// The threads the setting stands for.
     fn thread_count(&self) -> usize {
         match self.threads {
-            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_AUTO_THREADS),
+            0 => std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(MAX_AUTO_THREADS),
             n => n,
         }
     }
@@ -358,7 +360,10 @@ impl Decoder {
                 let h = PictureHeader::parse(&mut r)?;
                 if !(1..=4).contains(&h.picture_coding_type) {
                     self.pending_header = None;
-                    return Err(invalid(format!("picture_coding_type {}", h.picture_coding_type)));
+                    return Err(invalid(format!(
+                        "picture_coding_type {}",
+                        h.picture_coding_type
+                    )));
                 }
                 self.pending_header = Some(h);
                 self.pending_ext = None;
@@ -380,7 +385,9 @@ impl Decoder {
     /// the defaults, luma and chroma alike.
     fn header_matrices(h: &SequenceHeader) -> [[u8; 64]; 4] {
         let intra = h.intra_quantiser_matrix.unwrap_or(DEFAULT_INTRA_MATRIX);
-        let non_intra = h.non_intra_quantiser_matrix.unwrap_or(DEFAULT_NON_INTRA_MATRIX);
+        let non_intra = h
+            .non_intra_quantiser_matrix
+            .unwrap_or(DEFAULT_NON_INTRA_MATRIX);
         [intra, non_intra, intra, non_intra]
     }
 
@@ -403,7 +410,13 @@ impl Decoder {
             video_format: None,
         };
         let qmat = Self::header_matrices(&h);
-        self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h })
+        self.install_sequence(SeqState {
+            mb_width: 0,
+            mb_height: 0,
+            info,
+            qmat,
+            header: h,
+        })
     }
 
     /// Makes `s` the active sequence, sizing it; a change of picture size or
@@ -422,7 +435,10 @@ impl Decoder {
             self.newer = None;
             self.bufs.clear();
             self.seq = None;
-            return Err(unsupported(format!("picture size {}x{}", s.info.width, s.info.height)));
+            return Err(unsupported(format!(
+                "picture size {}x{}",
+                s.info.width, s.info.height
+            )));
         }
         s.mb_width = s.info.width.div_ceil(16) as usize;
         s.mb_height = if s.info.progressive_sequence {
@@ -462,7 +478,9 @@ impl Decoder {
                 let h = match (self.pending_seq.take(), &self.seq) {
                     (Some(h), _) => h,
                     (None, Some(s)) => s.header.clone(),
-                    (None, None) => return Err(invalid("sequence extension without a sequence header")),
+                    (None, None) => {
+                        return Err(invalid("sequence extension without a sequence header"));
+                    }
                 };
                 let chroma = ChromaFormat::from_code(u32::from(e.chroma_format))
                     .ok_or_else(|| invalid("chroma_format 0"))?;
@@ -480,7 +498,9 @@ impl Decoder {
                     chroma,
                     frame_rate: fr,
                     aspect_ratio_information: h.aspect_ratio_information,
-                    bit_rate: (u64::from(h.bit_rate_value) | (u64::from(e.bit_rate_extension) << 18)) * 400,
+                    bit_rate: (u64::from(h.bit_rate_value)
+                        | (u64::from(e.bit_rate_extension) << 18))
+                        * 400,
                     vbv_buffer_size: (u64::from(h.vbv_buffer_size_value)
                         | (u64::from(e.vbv_buffer_size_extension) << 10))
                         * 16
@@ -493,18 +513,27 @@ impl Decoder {
                     colour_description: None,
                     video_format: None,
                 };
-                self.install_sequence(SeqState { mb_width: 0, mb_height: 0, info, qmat, header: h })?;
+                self.install_sequence(SeqState {
+                    mb_width: 0,
+                    mb_height: 0,
+                    info,
+                    qmat,
+                    header: h,
+                })?;
             }
             (EXT_SEQUENCE_DISPLAY, Level::Sequence) => {
                 let e = SequenceDisplayExtension::parse(r)?;
                 if let Some(s) = &mut self.seq {
-                    s.info.display_size = Some((e.display_horizontal_size, e.display_vertical_size));
+                    s.info.display_size =
+                        Some((e.display_horizontal_size, e.display_vertical_size));
                     s.info.colour_description = e.colour_description;
                     s.info.video_format = Some(e.video_format);
                 }
             }
             (EXT_SEQUENCE_SCALABLE, _) => {
-                return Err(unsupported("scalable extensions (sequence_scalable_extension)"));
+                return Err(unsupported(
+                    "scalable extensions (sequence_scalable_extension)",
+                ));
             }
             (EXT_QUANT_MATRIX, _) => {
                 let q = QuantMatrixExtension::parse(r)?;
@@ -550,7 +579,14 @@ impl Decoder {
             return Err(invalid("slice without a sequence header"));
         }
         let cur = self.cur.as_ref().expect("picture open");
-        if cur.params.cur >= self.bufs.len() || cur.params.refs.iter().flatten().any(|&i| i >= self.bufs.len()) {
+        if cur.params.cur >= self.bufs.len()
+            || cur
+                .params
+                .refs
+                .iter()
+                .flatten()
+                .any(|&i| i >= self.bufs.len())
+        {
             return Err(invalid("slice of a picture whose buffers are gone"));
         }
         let start = self.batch_data.len();
@@ -580,7 +616,9 @@ impl Decoder {
     }
 
     fn decode_slices(&mut self, batch: &[(u8, usize, usize)], data: &[u8]) -> Result<()> {
-        let (Some(seq), Some(cur)) = (&self.seq, &self.cur) else { return Ok(()) };
+        let (Some(seq), Some(cur)) = (&self.seq, &self.cur) else {
+            return Ok(());
+        };
         let p = cur.params.clone();
         let (cw, ch) = seq.info.chroma.chroma_size(seq.info.width, seq.info.height);
         let seq_frame_len = (seq.info.width * seq.info.height + 2 * cw * ch) as usize;
@@ -598,7 +636,12 @@ impl Decoder {
         if needs_cur {
             let src = &self.bufs[p.cur];
             match &mut snapshot {
-                Some(s) if s.planes.iter().zip(&src.planes).all(|(a, b)| a.len() == b.len()) => {
+                Some(s)
+                    if s.planes
+                        .iter()
+                        .zip(&src.planes)
+                        .all(|(a, b)| a.len() == b.len()) =>
+                {
                     for (a, b) in s.planes.iter_mut().zip(&src.planes) {
                         a.copy_from_slice(b);
                     }
@@ -630,7 +673,11 @@ impl Decoder {
         // Contiguous runs of slices of about equal size — a few per thread,
         // taken by whichever thread is free, which evens out the work — and
         // the macroblock rows each owns: from its first slice's row.
-        let pieces = if workers == 1 { 1 } else { batch.len().min(workers * 4) };
+        let pieces = if workers == 1 {
+            1
+        } else {
+            batch.len().min(workers * 4)
+        };
         let total: usize = batch.iter().map(|s| s.2 - s.1).sum();
         let mut chunks: Vec<std::ops::Range<usize>> = Vec::with_capacity(pieces);
         let mut start = 0;
@@ -656,7 +703,10 @@ impl Decoder {
         bounds.push(p.mb_height);
 
         let refs = band::Refs {
-            dir: [p.refs[0].map(|i| &self.bufs[i]), p.refs[1].map(|i| &self.bufs[i])],
+            dir: [
+                p.refs[0].map(|i| &self.bufs[i]),
+                p.refs[1].map(|i| &self.bufs[i]),
+            ],
             cur: if needs_cur { snapshot.as_ref() } else { None },
         };
         let bands = band::split(&mut target, &mut self.writer, layout, &bounds);
@@ -668,7 +718,9 @@ impl Decoder {
         // touches the next output's pages while the others decode slices.
         let frame_len = seq_frame_len;
         let spare = std::sync::Mutex::new(self.spare.take().filter(|v| v.len() == frame_len));
-        let prefault = std::sync::atomic::AtomicBool::new(spare.lock().expect("spare").is_some() || frame_len == 0);
+        let prefault = std::sync::atomic::AtomicBool::new(
+            spare.lock().expect("spare").is_some() || frame_len == 0,
+        );
         let work = || -> (Vec<(usize, Error)>, Vec<band::Held>) {
             let (mut errors, mut held) = (Vec::new(), Vec::new());
             if !prefault.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -685,7 +737,9 @@ impl Decoder {
                 for i in chunk {
                     let (code, a, b) = batch[i];
                     band.slice = i as u32 + 1;
-                    if let Err(e) = slice::decode_slice(&p, &qmat, &refs, &mut band, code, &data[a..b]) {
+                    if let Err(e) =
+                        slice::decode_slice(&p, &qmat, &refs, &mut band, code, &data[a..b])
+                    {
                         errors.push((i, e));
                     }
                 }
@@ -730,9 +784,17 @@ impl Decoder {
     /// Sets up the picture whose header was just read, at its first slice.
     fn begin_picture(&mut self) -> Result<()> {
         let h = self.pending_header.take().expect("picture header");
-        let seq = self.seq.as_ref().ok_or_else(|| invalid("picture without a sequence header"))?;
-        let (mpeg1, chroma, seq_mb_width, seq_mb_height, seq_height) =
-            (seq.info.mpeg1, seq.info.chroma, seq.mb_width, seq.mb_height, seq.info.height);
+        let seq = self
+            .seq
+            .as_ref()
+            .ok_or_else(|| invalid("picture without a sequence header"))?;
+        let (mpeg1, chroma, seq_mb_width, seq_mb_height, seq_height) = (
+            seq.info.mpeg1,
+            seq.info.chroma,
+            seq.mb_width,
+            seq.mb_height,
+            seq.info.height,
+        );
         let ext = match (self.pending_ext.take(), mpeg1) {
             (Some(e), _) => e,
             (None, true) => PictureCodingExtension::mpeg1(&h),
@@ -749,7 +811,9 @@ impl Decoder {
             _ => PictureType::D,
         };
         if seq_mb_height % 2 != 0 && !frame_pic {
-            return Err(invalid("field picture in a progressive sequence of odd macroblock rows"));
+            return Err(invalid(
+                "field picture in a progressive sequence of odd macroblock rows",
+            ));
         }
         if self.bufs.is_empty() {
             self.bufs = (0..3).map(|_| PicBuf::new(fw, fh, chroma)).collect();
@@ -776,9 +840,7 @@ impl Decoder {
             let ok = match ptype {
                 PictureType::I | PictureType::D => true,
                 PictureType::P => self.newer.is_some(),
-                PictureType::B => {
-                    self.newer.is_some() && (self.older.is_some() || self.closed_gop)
-                }
+                PictureType::B => self.newer.is_some() && (self.older.is_some() || self.closed_gop),
             };
             if !ok {
                 self.skipping = true;
@@ -788,7 +850,9 @@ impl Decoder {
                 // The previous reference frame is due for display now.
                 self.output_newer();
             }
-            target = (0..3).find(|&i| Some(i) != self.older && Some(i) != self.newer).expect("free buffer");
+            target = (0..3)
+                .find(|&i| Some(i) != self.older && Some(i) != self.newer)
+                .expect("free buffer");
             meta = Meta {
                 picture_type: ptype,
                 temporal_reference: h.temporal_reference,
@@ -809,14 +873,21 @@ impl Decoder {
             mpeg1,
             chroma,
             mb_width: seq_mb_width,
-            mb_height: if frame_pic { seq_mb_height } else { seq_mb_height / 2 },
+            mb_height: if frame_pic {
+                seq_mb_height
+            } else {
+                seq_mb_height / 2
+            },
             vertical_size: seq_height,
             picture_type: h.picture_coding_type,
             picture_structure: ext.picture_structure,
             second_field: second,
             top_field_first: ext.top_field_first,
             f_code: ext.f_code,
-            full_pel: [h.full_pel_forward_vector && mpeg1, h.full_pel_backward_vector && mpeg1],
+            full_pel: [
+                h.full_pel_forward_vector && mpeg1,
+                h.full_pel_backward_vector && mpeg1,
+            ],
             intra_dc_precision: ext.intra_dc_precision,
             frame_pred_frame_dct: ext.frame_pred_frame_dct,
             concealment_motion_vectors: ext.concealment_motion_vectors,
@@ -829,7 +900,12 @@ impl Decoder {
         if second {
             self.first_field = None;
         }
-        self.cur = Some(Current { params, meta, anchor, first_field: !frame_pic && !second });
+        self.cur = Some(Current {
+            params,
+            meta,
+            anchor,
+            first_field: !frame_pic && !second,
+        });
         Ok(())
     }
 
@@ -882,11 +958,19 @@ impl Decoder {
         // A buffer that is gone, or smaller than the sequence says (neither
         // happens in a well-formed stream), outputs nothing.
         let Some(b) = self.bufs.get(buf) else { return };
-        if b.width < w || b.cwidth < cw || b.planes[0].len() < b.width * h || b.planes[1].len() < b.cwidth * ch {
+        if b.width < w
+            || b.cwidth < cw
+            || b.planes[0].len() < b.width * h
+            || b.planes[1].len() < b.cwidth * ch
+        {
             return;
         }
         let len = w * h + 2 * cw * ch;
-        let mut data = self.spare.take().filter(|v| v.len() == len).unwrap_or_else(|| vec![0u8; len]);
+        let mut data = self
+            .spare
+            .take()
+            .filter(|v| v.len() == len)
+            .unwrap_or_else(|| vec![0u8; len]);
         // The cropped copy, in bands of rows shared out to the slice threads:
         // a large frame is mostly the cost of first writes to new memory.
         let all = self.thread_count();
@@ -896,9 +980,11 @@ impl Decoder {
         let (dy, dc) = data.split_at_mut(w * h);
         let (du, dv) = dc.split_at_mut(cw * ch);
         let mut jobs = Vec::new();
-        for (dst, src, pw, stride, rows) in
-            [(dy, &b.planes[0], w, b.width, h), (du, &b.planes[1], cw, b.cwidth, ch), (dv, &b.planes[2], cw, b.cwidth, ch)]
-        {
+        for (dst, src, pw, stride, rows) in [
+            (dy, &b.planes[0], w, b.width, h),
+            (du, &b.planes[1], cw, b.cwidth, ch),
+            (dv, &b.planes[2], cw, b.cwidth, ch),
+        ] {
             let per = rows.div_ceil(2 * threads).max(1);
             for (k, d) in dst.chunks_mut(per * pw).enumerate() {
                 jobs.push((d, &src[k * per * stride..], pw, stride));
@@ -924,9 +1010,21 @@ impl Decoder {
             _ => jobs.into_iter().for_each(copy),
         }
         let planes = vec![
-            Plane { offset: 0, width: w as u32, height: h as u32 },
-            Plane { offset: w * h, width: cw as u32, height: ch as u32 },
-            Plane { offset: w * h + cw * ch, width: cw as u32, height: ch as u32 },
+            Plane {
+                offset: 0,
+                width: w as u32,
+                height: h as u32,
+            },
+            Plane {
+                offset: w * h,
+                width: cw as u32,
+                height: ch as u32,
+            },
+            Plane {
+                offset: w * h + cw * ch,
+                width: cw as u32,
+                height: ch as u32,
+            },
         ];
         self.out.push(Frame {
             width: w as u32,

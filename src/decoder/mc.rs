@@ -19,9 +19,17 @@ pub(crate) struct PicBuf {
 impl PicBuf {
     pub(crate) fn new(width: usize, height: usize, chroma: ChromaFormat) -> PicBuf {
         let cwidth = width / 2;
-        let cheight = if chroma == ChromaFormat::Yuv420 { height / 2 } else { height };
+        let cheight = if chroma == ChromaFormat::Yuv420 {
+            height / 2
+        } else {
+            height
+        };
         PicBuf {
-            planes: [vec![16; width * height], vec![128; cwidth * cheight], vec![128; cwidth * cheight]],
+            planes: [
+                vec![16; width * height],
+                vec![128; cwidth * cheight],
+                vec![128; cwidth * cheight],
+            ],
             width,
             height,
             cwidth,
@@ -31,11 +39,21 @@ impl PicBuf {
 
     /// A buffer with no samples (a placeholder while one is borrowed out).
     pub(crate) fn empty() -> PicBuf {
-        PicBuf { planes: [Vec::new(), Vec::new(), Vec::new()], width: 0, height: 0, cwidth: 0, cheight: 0 }
+        PicBuf {
+            planes: [Vec::new(), Vec::new(), Vec::new()],
+            width: 0,
+            height: 0,
+            cwidth: 0,
+            cheight: 0,
+        }
     }
 
     pub(crate) fn dims(&self, c: usize) -> (usize, usize) {
-        if c == 0 { (self.width, self.height) } else { (self.cwidth, self.cheight) }
+        if c == 0 {
+            (self.width, self.height)
+        } else {
+            (self.cwidth, self.cheight)
+        }
     }
 }
 
@@ -57,7 +75,10 @@ pub(crate) struct MbPred {
 
 impl MbPred {
     pub(crate) fn new() -> Self {
-        MbPred { y: [0; 256], c: [[0; 128]; 2] }
+        MbPred {
+            y: [0; 256],
+            c: [[0; 128]; 2],
+        }
     }
 }
 
@@ -85,7 +106,13 @@ pub(crate) struct Region {
 }
 
 /// Forms `region`'s prediction from `refp` into `pred` for every component.
-pub(crate) fn predict(refp: &PicBuf, view: View, chroma: ChromaFormat, region: &Region, pred: &mut MbPred) {
+pub(crate) fn predict(
+    refp: &PicBuf,
+    view: View,
+    chroma: ChromaFormat,
+    region: &Region,
+    pred: &mut MbPred,
+) {
     // Luma.
     predict_plane(
         &refp.planes[0],
@@ -106,7 +133,10 @@ pub(crate) fn predict(refp: &PicBuf, view: View, chroma: ChromaFormat, region: &
     // Chroma vectors and sizes (7.6.3.7): horizontal halved (with "/",
     // truncation toward zero); vertical halved for 4:2:0 only.
     let v420 = chroma == ChromaFormat::Yuv420;
-    let mv = [region.mv[0] / 2, if v420 { region.mv[1] / 2 } else { region.mv[1] }];
+    let mv = [
+        region.mv[0] / 2,
+        if v420 { region.mv[1] / 2 } else { region.mv[1] },
+    ];
     let (cy, ch, crow) = if v420 {
         (region.y / 2, region.h / 2, region.dst_row / 2)
     } else {
@@ -195,7 +225,11 @@ fn predict_plane(
                 _ => (at(sx, sy) + at(sx + 1, sy) + at(sx, sy + 1) + at(sx + 1, sy + 1) + 2) >> 2,
             };
             let di = i as usize;
-            d[di] = if avg { ((u32::from(d[di]) + p + 1) >> 1) as u8 } else { p as u8 };
+            d[di] = if avg {
+                ((u32::from(d[di]) + p + 1) >> 1) as u8
+            } else {
+                p as u8
+            };
         }
     }
 }
@@ -224,11 +258,23 @@ mod tests {
     fn half_sample_interpolation_matches_7_6_4() {
         let p = ramp();
         let mut pred = MbPred::new();
-        let r = Region { x: 8, y: 8, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv: [1, 1], avg: false };
+        let r = Region {
+            x: 8,
+            y: 8,
+            h: 16,
+            dst_row: 0,
+            dst_parity: 0,
+            dst_step: 1,
+            mv: [1, 1],
+            avg: false,
+        };
         predict(&p, View::Frame, ChromaFormat::Yuv420, &r, &mut pred);
         // Sample (0,0) of the prediction: average of (8,8) (9,8) (8,9) (9,9).
         let s = |x: usize, y: usize| u32::from(p.planes[0][y * 32 + x]);
-        assert_eq!(u32::from(pred.y[0]), (s(8, 8) + s(9, 8) + s(8, 9) + s(9, 9) + 2) / 4);
+        assert_eq!(
+            u32::from(pred.y[0]),
+            (s(8, 8) + s(9, 8) + s(8, 9) + s(9, 9) + 2) / 4
+        );
         // A negative odd vector: −1 → int −1, half 1 (DIV rounds toward −∞).
         let r = Region { mv: [-1, 0], ..r };
         predict(&p, View::Frame, ChromaFormat::Yuv420, &r, &mut pred);
@@ -239,7 +285,16 @@ mod tests {
     fn field_view_reads_alternate_lines() {
         let p = ramp();
         let mut pred = MbPred::new();
-        let r = Region { x: 0, y: 2, h: 8, dst_row: 0, dst_parity: 1, dst_step: 2, mv: [0, 0], avg: false };
+        let r = Region {
+            x: 0,
+            y: 2,
+            h: 8,
+            dst_row: 0,
+            dst_parity: 1,
+            dst_step: 2,
+            mv: [0, 0],
+            avg: false,
+        };
         predict(&p, View::Field(1), ChromaFormat::Yuv420, &r, &mut pred);
         // Field line 2 of the bottom field is frame line 5; it lands in MB
         // row 1 (parity 1).

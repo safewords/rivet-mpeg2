@@ -136,9 +136,21 @@ impl Frame {
         let mut data = vec![16u8; luma + 2 * c];
         data[luma..].fill(128);
         let planes = vec![
-            Plane { offset: 0, width, height },
-            Plane { offset: luma, width: cw, height: ch },
-            Plane { offset: luma + c, width: cw, height: ch },
+            Plane {
+                offset: 0,
+                width,
+                height,
+            },
+            Plane {
+                offset: luma,
+                width: cw,
+                height: ch,
+            },
+            Plane {
+                offset: luma + c,
+                width: cw,
+                height: ch,
+            },
         ];
         Frame {
             width,

@@ -139,7 +139,10 @@ impl Encoder {
     /// coded.
     pub fn new(cfg: EncoderConfig) -> Result<Encoder> {
         if cfg.width == 0 || cfg.height == 0 || cfg.width > 4095 || cfg.height > 2800 {
-            return Err(config(format!("size {}x{} (1–4095 × 1–2800)", cfg.width, cfg.height)));
+            return Err(config(format!(
+                "size {}x{} (1–4095 × 1–2800)",
+                cfg.width, cfg.height
+            )));
         }
         if cfg.gop_size == 0 {
             return Err(config("gop_size 0"));
@@ -148,22 +151,33 @@ impl Encoder {
             return Err(config("more than 7 B-pictures between references"));
         }
         if cfg.intra_dc_precision > 2 {
-            return Err(config("intra_dc_precision above 2 (10 bits) is not Main Profile"));
+            return Err(config(
+                "intra_dc_precision above 2 (10 bits) is not Main Profile",
+            ));
         }
         if !(1..=4).contains(&cfg.aspect_ratio_information) {
             return Err(config("aspect_ratio_information must be 1–4"));
         }
-        let (frame_rate_code, frame_rate_ext) = find_frame_rate(cfg.frame_rate)
-            .ok_or_else(|| config(format!("frame rate {}/{}", cfg.frame_rate.0, cfg.frame_rate.1)))?;
+        let (frame_rate_code, frame_rate_ext) =
+            find_frame_rate(cfg.frame_rate).ok_or_else(|| {
+                config(format!(
+                    "frame rate {}/{}",
+                    cfg.frame_rate.0, cfg.frame_rate.1
+                ))
+            })?;
         let qcode = match cfg.rate_control {
             RateControl::ConstantQuantiser(q) if (1..=31).contains(&q) => q,
-            RateControl::ConstantQuantiser(q) => return Err(config(format!("quantiser_scale_code {q}"))),
+            RateControl::ConstantQuantiser(q) => {
+                return Err(config(format!("quantiser_scale_code {q}")));
+            }
             RateControl::Bitrate(b) if b >= 10_000 => 8,
             RateControl::Bitrate(b) => return Err(config(format!("bit rate {b}"))),
         };
         let range = cfg.search_range.clamp(1, 1023) as i32;
         // f_code: vectors span [−8f, 8f − 0.5] samples, f = 2^(f_code − 1).
-        let f_code = (1..=9u8).find(|&fc| 8 * (1i32 << (fc - 1)) > range).unwrap_or(9);
+        let f_code = (1..=9u8)
+            .find(|&fc| 8 * (1i32 << (fc - 1)) > range)
+            .unwrap_or(9);
         let fps = f64::from(cfg.frame_rate.0) / f64::from(cfg.frame_rate.1);
         let rate = match cfg.rate_control {
             RateControl::Bitrate(b) => {
@@ -217,9 +231,19 @@ impl Encoder {
         }
         let (cw, ch) = ChromaFormat::Yuv420.chroma_size(frame.width, frame.height);
         for (i, p) in frame.planes.iter().enumerate() {
-            let want = if i == 0 { (frame.width, frame.height) } else { (cw, ch) };
-            if (p.width, p.height) != want || p.offset.checked_add(p.len()).is_none_or(|end| end > frame.data.len()) {
-                return Err(config(format!("plane {i} does not fit the frame's size or data")));
+            let want = if i == 0 {
+                (frame.width, frame.height)
+            } else {
+                (cw, ch)
+            };
+            if (p.width, p.height) != want
+                || p.offset
+                    .checked_add(p.len())
+                    .is_none_or(|end| end > frame.data.len())
+            {
+                return Err(config(format!(
+                    "plane {i} does not fit the frame's size or data"
+                )));
             }
         }
         let buf = self.pad(frame)?;
@@ -285,7 +309,11 @@ impl Encoder {
     /// Copies a frame into a macroblock-aligned buffer, repeating the edge
     /// samples into the padding.
     fn pad(&self, frame: &Frame) -> Result<PicBuf> {
-        let mut b = PicBuf::new(self.mb_width * 16, self.mb_height * 16, ChromaFormat::Yuv420);
+        let mut b = PicBuf::new(
+            self.mb_width * 16,
+            self.mb_height * 16,
+            ChromaFormat::Yuv420,
+        );
         for c in 0..3 {
             let p = frame.planes[c];
             let src = frame.plane(c);
@@ -331,7 +359,11 @@ impl Encoder {
         }
         let ptype = if new_gop { 1 } else { 2 };
         let tr = (anchor_idx - self.gop_start) as u16;
-        let mut recon = PicBuf::new(self.mb_width * 16, self.mb_height * 16, ChromaFormat::Yuv420);
+        let mut recon = PicBuf::new(
+            self.mb_width * 16,
+            self.mb_height * 16,
+            ChromaFormat::Yuv420,
+        );
         let previous = self.newer.take();
         let refp = if ptype == 2 { previous.as_ref() } else { None };
         self.code(w, ptype, tr, &anchor, refp, None, Some(&mut recon));
@@ -345,7 +377,13 @@ impl Encoder {
             let tr = (idx - self.gop_start) as u16;
             let (older, newer) = (self.older.take(), self.newer.take());
             // A B-picture is reconstructed only to be checked.
-            let mut recon = self.recons.is_some().then(|| PicBuf::new(self.mb_width * 16, self.mb_height * 16, ChromaFormat::Yuv420));
+            let mut recon = self.recons.is_some().then(|| {
+                PicBuf::new(
+                    self.mb_width * 16,
+                    self.mb_height * 16,
+                    ChromaFormat::Yuv420,
+                )
+            });
             self.code(w, 3, tr, &f, older.as_ref(), newer.as_ref(), recon.as_mut());
             if let (Some(v), Some(r)) = (&mut self.recons, recon) {
                 v.push((idx, r));
@@ -506,10 +544,22 @@ impl Encoder {
         let per_sec = u64::from(n.div_ceil(d)).max(1);
         let secs_total = display_index / per_sec;
         let pictures = display_index % per_sec;
-        let (h, m, s) = ((secs_total / 3600) % 24, (secs_total / 60) % 60, secs_total % 60);
-        let time_code =
-            ((h as u32) << 19) | ((m as u32) << 13) | (1 << 12) | ((s as u32) << 6) | (pictures as u32 & 63);
-        GopHeader { time_code, closed_gop: closed, broken_link: false }.write(w);
+        let (h, m, s) = (
+            (secs_total / 3600) % 24,
+            (secs_total / 60) % 60,
+            secs_total % 60,
+        );
+        let time_code = ((h as u32) << 19)
+            | ((m as u32) << 13)
+            | (1 << 12)
+            | ((s as u32) << 6)
+            | (pictures as u32 & 63);
+        GopHeader {
+            time_code,
+            closed_gop: closed,
+            broken_link: false,
+        }
+        .write(w);
     }
 }
 
@@ -538,7 +588,9 @@ fn find_frame_rate((n, d): (u32, u32)) -> Option<(u8, (u8, u8))> {
                     continue;
                 }
                 // vn/vd × (en+1)/(ed+1) == n/d
-                if u64::from(vn) * (en + 1) * u64::from(d) == u64::from(n) * u64::from(vd) * (ed + 1) {
+                if u64::from(vn) * (en + 1) * u64::from(d)
+                    == u64::from(n) * u64::from(vd) * (ed + 1)
+                {
                     return Some((code, (en as u8, ed as u8)));
                 }
             }

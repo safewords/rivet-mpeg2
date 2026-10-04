@@ -9,8 +9,10 @@ use crate::error::{Result, invalid, unsupported};
 use crate::frame::ChromaFormat;
 use crate::headers::{BOTTOM_FIELD, FRAME_PICTURE};
 use crate::idct::idct;
-use crate::tables::{MB_BACKWARD, MB_FORWARD, MB_INTRA, MB_PATTERN, MB_QUANT, SCAN, quantiser_scale};
-use crate::vlc::{self, DCT_EOB, DCT_ESCAPE, MB_ESCAPE, MB_STUFFING, Decoders};
+use crate::tables::{
+    MB_BACKWARD, MB_FORWARD, MB_INTRA, MB_PATTERN, MB_QUANT, SCAN, quantiser_scale,
+};
+use crate::vlc::{self, DCT_EOB, DCT_ESCAPE, Decoders, MB_ESCAPE, MB_STUFFING};
 
 /// Everything a slice needs to know about its picture.
 #[derive(Clone, Debug)]
@@ -51,7 +53,11 @@ impl Params {
         u8::from(self.picture_structure == BOTTOM_FIELD)
     }
     fn block_count(&self) -> usize {
-        if self.chroma == ChromaFormat::Yuv422 { 8 } else { 6 }
+        if self.chroma == ChromaFormat::Yuv422 {
+            8
+        } else {
+            6
+        }
     }
 }
 
@@ -161,7 +167,10 @@ pub(crate) fn decode_slice(
         }
     }
     if mb_row >= p.mb_height {
-        return Err(invalid(format!("slice row {mb_row} beyond the picture's {}", p.mb_height)));
+        return Err(invalid(format!(
+            "slice row {mb_row} beyond the picture's {}",
+            p.mb_height
+        )));
     }
 
     let mut st = State {
@@ -230,23 +239,41 @@ pub(crate) fn decode_slice(
 fn skipped_mb(st: &mut State, refs: &Refs, band: &mut Band, addr: usize) -> Result<()> {
     let p = st.p;
     st.reset_dc();
-    let kind = if p.frame_picture() { Kind::Frame } else { Kind::Field };
+    let kind = if p.frame_picture() {
+        Kind::Frame
+    } else {
+        Kind::Field
+    };
     let parity = p.parity();
     let m = match p.picture_type {
         2 => {
             st.pmv = [[[0; 2]; 2]; 2];
-            Motion { dirs: 1, kind, sel: [[parity; 2]; 2], mv: [[[0; 2]; 2]; 2], dmv: [0; 2] }
+            Motion {
+                dirs: 1,
+                kind,
+                sel: [[parity; 2]; 2],
+                mv: [[[0; 2]; 2]; 2],
+                dmv: [0; 2],
+            }
         }
         3 => {
             let dirs = st.prev_dirs;
             if dirs == 0 {
-                return Err(invalid("skipped macroblock after an intra macroblock in a B-picture"));
+                return Err(invalid(
+                    "skipped macroblock after an intra macroblock in a B-picture",
+                ));
             }
             let mut mv = [[[0; 2]; 2]; 2];
             for (s, v) in mv[0].iter_mut().enumerate() {
                 *v = scale_full_pel(p, s, st.pmv[0][s]);
             }
-            Motion { dirs, kind, sel: [[parity; 2]; 2], mv, dmv: [0; 2] }
+            Motion {
+                dirs,
+                kind,
+                sel: [[parity; 2]; 2],
+                mv,
+                dmv: [0; 2],
+            }
         }
         _ => return Err(invalid("skipped macroblock in an I-picture")),
     };
@@ -257,10 +284,20 @@ fn skipped_mb(st: &mut State, refs: &Refs, band: &mut Band, addr: usize) -> Resu
 }
 
 fn scale_full_pel(p: &Params, s: usize, v: [i32; 2]) -> [i32; 2] {
-    if p.full_pel[s] { [v[0] * 2, v[1] * 2] } else { v }
+    if p.full_pel[s] {
+        [v[0] * 2, v[1] * 2]
+    } else {
+        v
+    }
 }
 
-fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, addr: usize) -> Result<()> {
+fn macroblock(
+    st: &mut State,
+    r: &mut BitReader,
+    refs: &Refs,
+    band: &mut Band,
+    addr: usize,
+) -> Result<()> {
     let p = st.p;
     let d = st.d;
     // A D-picture's only macroblock_type is `1`, intra: Table B.2's code.
@@ -280,7 +317,11 @@ fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, a
     let bwd = flags & MB_BACKWARD != 0;
     let pattern = flags & MB_PATTERN != 0;
 
-    let mut kind = if p.frame_picture() { Kind::Frame } else { Kind::Field };
+    let mut kind = if p.frame_picture() {
+        Kind::Frame
+    } else {
+        Kind::Field
+    };
     if fwd || bwd {
         if p.frame_picture() {
             if !p.frame_pred_frame_dct {
@@ -300,7 +341,8 @@ fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, a
             };
         }
     }
-    let dct_type = p.frame_picture() && !p.frame_pred_frame_dct && (intra || pattern) && r.read_bit();
+    let dct_type =
+        p.frame_picture() && !p.frame_pred_frame_dct && (intra || pattern) && r.read_bit();
     if flags & MB_QUANT != 0 {
         st.quantiser_scale_code = r.read(5) as u8;
         if st.quantiser_scale_code == 0 {
@@ -330,8 +372,15 @@ fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, a
 
     let block_count = p.block_count();
     let cbp: u32 = if pattern {
-        let v = d.cbp.decode(r).ok_or_else(|| invalid("bad coded_block_pattern"))? as u32;
-        if p.chroma == ChromaFormat::Yuv422 { (v << 2) | r.read(2) } else { v }
+        let v = d
+            .cbp
+            .decode(r)
+            .ok_or_else(|| invalid("bad coded_block_pattern"))? as u32;
+        if p.chroma == ChromaFormat::Yuv422 {
+            (v << 2) | r.read(2)
+        } else {
+            v
+        }
     } else if intra {
         (1 << block_count) - 1
     } else {
@@ -350,7 +399,11 @@ fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, a
             // No MC in a P-picture: zero vector, same-parity field.
             st.pmv = [[[0; 2]; 2]; 2];
             m.dirs = 1;
-            m.kind = if p.frame_picture() { Kind::Frame } else { Kind::Field };
+            m.kind = if p.frame_picture() {
+                Kind::Frame
+            } else {
+                Kind::Field
+            };
             m.sel = [[p.parity(); 2]; 2];
         }
         st.prev_dirs = m.dirs;
@@ -389,7 +442,13 @@ fn macroblock(st: &mut State, r: &mut BitReader, refs: &Refs, band: &mut Band, a
 
 /// A macroblock of an ISO/IEC 11172-2 D-picture: intra, each block only its
 /// DC coefficient (no end of block), then end_of_macroblock, a `1`.
-fn d_macroblock(st: &mut State, r: &mut BitReader, band: &mut Band, addr: usize, flags: u8) -> Result<()> {
+fn d_macroblock(
+    st: &mut State,
+    r: &mut BitReader,
+    band: &mut Band,
+    addr: usize,
+    flags: u8,
+) -> Result<()> {
     let p = st.p;
     if flags != MB_INTRA {
         return Err(invalid("non-intra macroblock in a D-picture"));
@@ -404,7 +463,11 @@ fn d_macroblock(st: &mut State, r: &mut BitReader, band: &mut Band, addr: usize,
             0
         } else {
             let v = r.read(size) as i32;
-            if v >= 1 << (size - 1) { v } else { v + 1 - (1 << size) }
+            if v >= 1 << (size - 1) {
+                v
+            } else {
+                v + 1 - (1 << size)
+            }
         };
         let dc = (st.dc_pred[cc] + diff).clamp(0, 255);
         st.dc_pred[cc] = dc;
@@ -454,15 +517,27 @@ fn motion_vector(
     let p = st.p;
     let d = st.d;
     for t in 0..2 {
-        let code = i32::from(d.motion_code.decode(r).ok_or_else(|| invalid("bad motion_code"))?);
+        let code = i32::from(
+            d.motion_code
+                .decode(r)
+                .ok_or_else(|| invalid("bad motion_code"))?,
+        );
         let f_code = p.f_code[s][t];
         if !(1..=9).contains(&f_code) {
             return Err(invalid(format!("f_code {f_code} used by a motion vector")));
         }
         let r_size = u32::from(f_code - 1);
-        let residual = if r_size != 0 && code != 0 { r.read(r_size) as i32 } else { 0 };
+        let residual = if r_size != 0 && code != 0 {
+            r.read(r_size) as i32
+        } else {
+            0
+        };
         if dmv {
-            m.dmv[t] = i32::from(d.dmvector.decode(r).ok_or_else(|| invalid("bad dmvector"))?);
+            m.dmv[t] = i32::from(
+                d.dmvector
+                    .decode(r)
+                    .ok_or_else(|| invalid("bad dmvector"))?,
+            );
         }
         let f = 1i32 << r_size;
         let high = 16 * f - 1;
@@ -517,7 +592,11 @@ fn read_block(
             0
         } else {
             let v = r.read(size) as i32;
-            if v >= 1 << (size - 1) { v } else { v + 1 - (1 << size) }
+            if v >= 1 << (size - 1) {
+                v
+            } else {
+                v + 1 - (1 << size)
+            }
         };
         let dc = st.dc_pred[cc] + diff;
         let max = (1 << (8 + p.intra_dc_precision)) - 1;
@@ -544,7 +623,9 @@ fn read_block(
             run = 0;
             level = if r.read_bit() { -1 } else { 1 };
         } else {
-            let v = d.dct[table].decode(r).ok_or_else(|| invalid("bad DCT coefficient code"))?;
+            let v = d.dct[table]
+                .decode(r)
+                .ok_or_else(|| invalid("bad DCT coefficient code"))?;
             if v == DCT_EOB {
                 if first {
                     return Err(invalid("end of block as the only code of a block"));
@@ -615,9 +696,20 @@ fn read_block(
 
 /// Adds block `i`'s IDCT output to the prediction (or, intra, stores it),
 /// saturating to [0, 255] (7.6.8).
-fn add_block(p: &Params, pred: &mut MbPred, i: usize, dct_type: bool, intra: bool, blk: &[i32; 64]) {
+fn add_block(
+    p: &Params,
+    pred: &mut MbPred,
+    i: usize,
+    dct_type: bool,
+    intra: bool,
+    blk: &[i32; 64],
+) {
     let (plane, stride, x0, y0, step): (&mut [u8], usize, usize, usize, usize) = if i < 4 {
-        let (y0, step) = if dct_type { (i >> 1, 2) } else { ((i >> 1) * 8, 1) };
+        let (y0, step) = if dct_type {
+            (i >> 1, 2)
+        } else {
+            ((i >> 1) * 8, 1)
+        };
         (&mut pred.y[..], 16, (i & 1) * 8, y0, step)
     } else {
         let c = (i - 4) & 1;
@@ -659,7 +751,16 @@ fn form_prediction(p: &Params, refs: &Refs, addr: usize, m: &Motion, pred: &mut 
         first = false;
         match m.kind {
             Kind::Frame => {
-                let r = Region { x, y: mby * 16, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv: m.mv[0][s], avg };
+                let r = Region {
+                    x,
+                    y: mby * 16,
+                    h: 16,
+                    dst_row: 0,
+                    dst_parity: 0,
+                    dst_step: 1,
+                    mv: m.mv[0][s],
+                    avg,
+                };
                 if let Some(b) = field_ref(s, 0) {
                     mc::predict(b, View::Frame, p.chroma, &r, pred);
                 }
@@ -692,7 +793,10 @@ fn form_prediction(p: &Params, refs: &Refs, addr: usize, m: &Motion, pred: &mut 
                         (_, true) => (3, 1),
                         (_, false) => (1, 1),
                     };
-                    let dv = [mc::div2_round(v[0] * mm) + m.dmv[0], mc::div2_round(v[1] * mm) + e + m.dmv[1]];
+                    let dv = [
+                        mc::div2_round(v[0] * mm) + m.dmv[0],
+                        mc::div2_round(v[1] * mm) + e + m.dmv[1],
+                    ];
                     let refi = refs.dir[0].or(refs.cur);
                     let base = Region {
                         x,
@@ -707,7 +811,11 @@ fn form_prediction(p: &Params, refs: &Refs, addr: usize, m: &Motion, pred: &mut 
                     if let Some(b) = refi {
                         mc::predict(b, View::Field(f), p.chroma, &base, pred);
                     }
-                    let opp = Region { mv: dv, avg: true, ..base };
+                    let opp = Region {
+                        mv: dv,
+                        avg: true,
+                        ..base
+                    };
                     if let Some(b) = refi {
                         mc::predict(b, View::Field(1 - f), p.chroma, &opp, pred);
                     }
@@ -715,7 +823,16 @@ fn form_prediction(p: &Params, refs: &Refs, addr: usize, m: &Motion, pred: &mut 
             }
             Kind::Field => {
                 let sel = m.sel[0][s];
-                let r = Region { x, y: mby * 16, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv: m.mv[0][s], avg };
+                let r = Region {
+                    x,
+                    y: mby * 16,
+                    h: 16,
+                    dst_row: 0,
+                    dst_parity: 0,
+                    dst_step: 1,
+                    mv: m.mv[0][s],
+                    avg,
+                };
                 if let Some(b) = field_ref(s, sel) {
                     mc::predict(b, View::Field(sel), p.chroma, &r, pred);
                 }
@@ -741,12 +858,28 @@ fn form_prediction(p: &Params, refs: &Refs, addr: usize, m: &Motion, pred: &mut 
             Kind::DualField => {
                 let v = m.mv[0][0];
                 let e = if parity == 0 { -1 } else { 1 };
-                let dv = [mc::div2_round(v[0]) + m.dmv[0], mc::div2_round(v[1]) + e + m.dmv[1]];
-                let same = Region { x, y: mby * 16, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv: v, avg: false };
+                let dv = [
+                    mc::div2_round(v[0]) + m.dmv[0],
+                    mc::div2_round(v[1]) + e + m.dmv[1],
+                ];
+                let same = Region {
+                    x,
+                    y: mby * 16,
+                    h: 16,
+                    dst_row: 0,
+                    dst_parity: 0,
+                    dst_step: 1,
+                    mv: v,
+                    avg: false,
+                };
                 if let Some(b) = field_ref(0, parity) {
                     mc::predict(b, View::Field(parity), p.chroma, &same, pred);
                 }
-                let opp = Region { mv: dv, avg: true, ..same };
+                let opp = Region {
+                    mv: dv,
+                    avg: true,
+                    ..same
+                };
                 if let Some(b) = field_ref(0, 1 - parity) {
                     mc::predict(b, View::Field(1 - parity), p.chroma, &opp, pred);
                 }

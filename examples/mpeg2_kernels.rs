@@ -166,7 +166,17 @@ fn fdct_original(input: &[i32; 64]) -> [i32; 64] {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn mc_original(src: &[u8], stride: usize, off: usize, w: usize, h: usize, hx: i32, hy: i32, avg: bool, d: &mut [u8]) {
+fn mc_original(
+    src: &[u8],
+    stride: usize,
+    off: usize,
+    w: usize,
+    h: usize,
+    hx: i32,
+    hy: i32,
+    avg: bool,
+    d: &mut [u8],
+) {
     for j in 0..h {
         let r0 = off + j * stride;
         let r1 = off + (j + hy as usize) * stride;
@@ -179,9 +189,20 @@ fn mc_original(src: &[u8], stride: usize, off: usize, w: usize, h: usize, hx: i3
                 (0, 0) => u32::from(a[i]),
                 (1, 0) => (u32::from(a[i]) + u32::from(a[i + 1]) + 1) >> 1,
                 (0, _) => (u32::from(a[i]) + u32::from(b[i]) + 1) >> 1,
-                _ => (u32::from(a[i]) + u32::from(a[i + 1]) + u32::from(b[i]) + u32::from(b[i + 1]) + 2) >> 2,
+                _ => {
+                    (u32::from(a[i])
+                        + u32::from(a[i + 1])
+                        + u32::from(b[i])
+                        + u32::from(b[i + 1])
+                        + 2)
+                        >> 2
+                }
             };
-            d[i] = if avg { ((u32::from(d[i]) + p + 1) >> 1) as u8 } else { p as u8 };
+            d[i] = if avg {
+                ((u32::from(d[i]) + p + 1) >> 1) as u8
+            } else {
+                p as u8
+            };
         }
     }
 }
@@ -233,13 +254,24 @@ fn main() {
             b
         })
         .collect();
-    let dense: Vec<[i32; 64]> =
-        (0..n).map(|_| std::array::from_fn(|_| rng.range(-300, 300))).collect();
-    let samples: Vec<[i32; 64]> = (0..n).map(|_| std::array::from_fn(|_| rng.range(-255, 255))).collect();
+    let dense: Vec<[i32; 64]> = (0..n)
+        .map(|_| std::array::from_fn(|_| rng.range(-300, 300)))
+        .collect();
+    let samples: Vec<[i32; 64]> = (0..n)
+        .map(|_| std::array::from_fn(|_| rng.range(-255, 255)))
+        .collect();
 
-    println!("\n{:<28} {:>10} {}", "kernel", "original", rungs.iter().map(|r| format!("{r:>10}")).collect::<String>());
+    println!(
+        "\n{:<28} {:>10} {}",
+        "kernel",
+        "original",
+        rungs.iter().map(|r| format!("{r:>10}")).collect::<String>()
+    );
     let row = |name: &str, orig: f64, per: Vec<f64>| {
-        println!("{name:<28} {orig:>10.1} {}", per.iter().map(|v| format!("{v:>10.1}")).collect::<String>());
+        println!(
+            "{name:<28} {orig:>10.1} {}",
+            per.iter().map(|v| format!("{v:>10.1}")).collect::<String>()
+        );
     };
 
     for (label, set) in [("idct 8x8 sparse", &sparse), ("idct 8x8 dense", &dense)] {
@@ -268,14 +300,25 @@ fn main() {
                 black_box(fdct_original(b));
             }
         });
-        let per = rungs.iter().map(|r| time(n, || { black_box(mpeg2::__bench::fdct(r, &samples)); })).collect();
+        let per = rungs
+            .iter()
+            .map(|r| {
+                time(n, || {
+                    black_box(mpeg2::__bench::fdct(r, &samples));
+                })
+            })
+            .collect();
         row("fdct 8x8", orig, per);
     }
 
     // Motion compensation: random positions in a 1920-wide plane.
     let stride = 1920;
-    let src: Vec<u8> = (0..stride * 200).map(|_| (rng.next() & 255) as u8).collect();
-    let offs: Vec<usize> = (0..n).map(|_| rng.range(0, 150) as usize * stride + rng.range(0, 1880) as usize).collect();
+    let src: Vec<u8> = (0..stride * 200)
+        .map(|_| (rng.next() & 255) as u8)
+        .collect();
+    let offs: Vec<usize> = (0..n)
+        .map(|_| rng.range(0, 150) as usize * stride + rng.range(0, 1880) as usize)
+        .collect();
     for (w, h) in [(16, 16), (8, 8)] {
         for (hx, hy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
             for avg in [false, true] {
@@ -290,18 +333,35 @@ fn main() {
                     .iter()
                     .map(|r| {
                         time(n, || {
-                            mpeg2::__bench::mc(r, &src, stride, &offs, w, h, hx == 1, hy == 1, avg, &mut d);
+                            mpeg2::__bench::mc(
+                                r,
+                                &src,
+                                stride,
+                                &offs,
+                                w,
+                                h,
+                                hx == 1,
+                                hy == 1,
+                                avg,
+                                &mut d,
+                            );
                             black_box(&d);
                         })
                     })
                     .collect();
-                row(&format!("mc {w}x{h} h{hx}{hy}{}", if avg { " avg" } else { "" }), orig, per);
+                row(
+                    &format!("mc {w}x{h} h{hx}{hy}{}", if avg { " avg" } else { "" }),
+                    orig,
+                    per,
+                );
             }
         }
     }
 
     // Residual addition.
-    let res: Vec<[i32; 64]> = (0..n).map(|_| std::array::from_fn(|_| rng.range(-256, 255))).collect();
+    let res: Vec<[i32; 64]> = (0..n)
+        .map(|_| std::array::from_fn(|_| rng.range(-256, 255)))
+        .collect();
     for intra in [false, true] {
         let mut d = vec![128u8; 16 * 8];
         let orig = time(n, || {
@@ -319,15 +379,33 @@ fn main() {
                 })
             })
             .collect();
-        row(if intra { "put block 8x8 (intra)" } else { "add block 8x8" }, orig, per);
+        row(
+            if intra {
+                "put block 8x8 (intra)"
+            } else {
+                "add block 8x8"
+            },
+            orig,
+            per,
+        );
     }
 
     // SAD.
     let a: Vec<u8> = src[..stride * 16].to_vec();
     let orig = time(n, || {
-        let s: u64 = offs.iter().map(|&o| u64::from(sad_original(&a, &src, stride, o, u32::MAX))).sum();
+        let s: u64 = offs
+            .iter()
+            .map(|&o| u64::from(sad_original(&a, &src, stride, o, u32::MAX)))
+            .sum();
         black_box(s);
     });
-    let per = rungs.iter().map(|r| time(n, || { black_box(mpeg2::__bench::sad16(r, &a, &src, stride, &offs)); })).collect();
+    let per = rungs
+        .iter()
+        .map(|r| {
+            time(n, || {
+                black_box(mpeg2::__bench::sad16(r, &a, &src, stride, &offs));
+            })
+        })
+        .collect();
     row("sad 16x16", orig, per);
 }

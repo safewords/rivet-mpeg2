@@ -18,7 +18,11 @@ fn check(cfg: EncoderConfig, n: u32, min_psnr: f64) -> (f64, usize) {
         assert_eq!((b.width, b.height), (w, h));
         let p = psnr(a, b, 0);
         let pc = psnr(a, b, 1).min(psnr(a, b, 2));
-        assert!(p >= min_psnr, "frame {i} ({:?}): luma PSNR {p:.2} dB", b.picture_type);
+        assert!(
+            p >= min_psnr,
+            "frame {i} ({:?}): luma PSNR {p:.2} dB",
+            b.picture_type
+        );
         assert!(pc >= min_psnr, "frame {i}: chroma PSNR {pc:.2} dB");
         worst = worst.min(p);
         sum += p;
@@ -39,46 +43,65 @@ fn check(cfg: EncoderConfig, n: u32, min_psnr: f64) -> (f64, usize) {
 
 #[test]
 fn intra_only() {
-    let cfg = EncoderConfig { gop_size: 1, b_frames: 0, ..EncoderConfig::new(64, 48) };
+    let cfg = EncoderConfig {
+        gop_size: 1,
+        b_frames: 0,
+        ..EncoderConfig::new(64, 48)
+    };
     check(cfg, 4, 36.0);
 }
 
 #[test]
 fn i_and_p() {
-    let cfg = EncoderConfig { b_frames: 0, ..EncoderConfig::new(96, 64) };
+    let cfg = EncoderConfig {
+        b_frames: 0,
+        ..EncoderConfig::new(96, 64)
+    };
     check(cfg, 10, 36.0);
 }
 
 #[test]
 fn i_p_and_b_in_display_order() {
-    let cfg = EncoderConfig { b_frames: 2, gop_size: 6, ..EncoderConfig::new(80, 48) };
+    let cfg = EncoderConfig {
+        b_frames: 2,
+        gop_size: 6,
+        ..EncoderConfig::new(80, 48)
+    };
     let src: Vec<_> = (0..14).map(|t| synthetic(80, 48, t)).collect();
     let stream = encode(cfg.clone(), &src);
     let dec = decode(&stream, 7);
     assert_eq!(dec.len(), 14);
     // Display order: each decoded frame is closest to its own source.
     for (i, d) in dec.iter().enumerate() {
-        let best = (0..src.len()).max_by(|&a, &b| psnr(&src[a], d, 0).total_cmp(&psnr(&src[b], d, 0))).unwrap();
+        let best = (0..src.len())
+            .max_by(|&a, &b| psnr(&src[a], d, 0).total_cmp(&psnr(&src[b], d, 0)))
+            .unwrap();
         assert_eq!(best, i, "frame {i} matches source {best}");
     }
     let types: Vec<_> = dec.iter().map(|f| f.picture_type).collect();
-    assert_eq!(&types[..7], &[
-        PictureType::I,
-        PictureType::B,
-        PictureType::B,
-        PictureType::P,
-        PictureType::B,
-        PictureType::B,
-        PictureType::I
-    ]);
+    assert_eq!(
+        &types[..7],
+        &[
+            PictureType::I,
+            PictureType::B,
+            PictureType::B,
+            PictureType::P,
+            PictureType::B,
+            PictureType::B,
+            PictureType::I
+        ]
+    );
     check(cfg, 14, 36.0);
 }
 
 #[test]
 fn coding_tools() {
-    for (ivlc, alt, qst, dcp) in
-        [(false, false, false, 0), (true, true, false, 1), (false, true, true, 2), (true, false, true, 0)]
-    {
+    for (ivlc, alt, qst, dcp) in [
+        (false, false, false, 0),
+        (true, true, false, 1),
+        (false, true, true, 2),
+        (true, false, true, 0),
+    ] {
         let cfg = EncoderConfig {
             intra_vlc_format: ivlc,
             alternate_scan: alt,
@@ -94,7 +117,10 @@ fn coding_tools() {
 
 #[test]
 fn odd_sizes_are_cropped() {
-    let cfg = EncoderConfig { b_frames: 1, ..EncoderConfig::new(37, 21) };
+    let cfg = EncoderConfig {
+        b_frames: 1,
+        ..EncoderConfig::new(37, 21)
+    };
     check(cfg, 5, 34.0);
 }
 
@@ -102,7 +128,10 @@ fn odd_sizes_are_cropped() {
 fn quantiser_trades_size_for_quality() {
     let mut last = (f64::INFINITY, 0usize);
     for q in [2u8, 6, 16, 31] {
-        let cfg = EncoderConfig { rate_control: RateControl::ConstantQuantiser(q), ..EncoderConfig::new(64, 64) };
+        let cfg = EncoderConfig {
+            rate_control: RateControl::ConstantQuantiser(q),
+            ..EncoderConfig::new(64, 64)
+        };
         let r = check(cfg, 6, 24.0);
         assert!(r.0 < last.0, "PSNR falls as q rises");
         if last.1 != 0 {
@@ -116,11 +145,17 @@ fn quantiser_trades_size_for_quality() {
 fn rate_control_tracks_the_target() {
     let (w, h, n) = (128u32, 96u32, 24u32);
     for target in [200_000u32, 800_000] {
-        let cfg = EncoderConfig { rate_control: RateControl::Bitrate(target), ..EncoderConfig::new(w, h) };
+        let cfg = EncoderConfig {
+            rate_control: RateControl::Bitrate(target),
+            ..EncoderConfig::new(w, h)
+        };
         let (_, bytes) = check(cfg, n, 22.0);
         let rate = bytes as f64 * 8.0 * 25.0 / f64::from(n);
         eprintln!("target {target} b/s: got {rate:.0} b/s");
-        assert!(rate > f64::from(target) * 0.5 && rate < f64::from(target) * 1.6, "rate {rate}");
+        assert!(
+            rate > f64::from(target) * 0.5 && rate < f64::from(target) * 1.6,
+            "rate {rate}"
+        );
     }
 }
 
@@ -130,20 +165,41 @@ fn bad_configurations_and_frames_are_refused() {
     for cfg in [
         EncoderConfig::new(0, 16),
         EncoderConfig::new(16, 3000),
-        EncoderConfig { frame_rate: (1, 1000), ..EncoderConfig::new(16, 16) },
-        EncoderConfig { rate_control: RateControl::ConstantQuantiser(0), ..EncoderConfig::new(16, 16) },
-        EncoderConfig { intra_dc_precision: 3, ..EncoderConfig::new(16, 16) },
-        EncoderConfig { gop_size: 0, ..EncoderConfig::new(16, 16) },
+        EncoderConfig {
+            frame_rate: (1, 1000),
+            ..EncoderConfig::new(16, 16)
+        },
+        EncoderConfig {
+            rate_control: RateControl::ConstantQuantiser(0),
+            ..EncoderConfig::new(16, 16)
+        },
+        EncoderConfig {
+            intra_dc_precision: 3,
+            ..EncoderConfig::new(16, 16)
+        },
+        EncoderConfig {
+            gop_size: 0,
+            ..EncoderConfig::new(16, 16)
+        },
     ] {
         assert!(matches!(Encoder::new(cfg), Err(Error::Config(_))));
     }
     let mut enc = Encoder::new(EncoderConfig::new(32, 32)).unwrap();
-    assert!(matches!(enc.encode(&Frame::new(16, 16, ChromaFormat::Yuv420)), Err(Error::Config(_))));
-    assert!(matches!(enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv422)), Err(Error::Config(_))));
+    assert!(matches!(
+        enc.encode(&Frame::new(16, 16, ChromaFormat::Yuv420)),
+        Err(Error::Config(_))
+    ));
+    assert!(matches!(
+        enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv422)),
+        Err(Error::Config(_))
+    ));
     let mut broken = Frame::new(32, 32, ChromaFormat::Yuv420);
     broken.data.truncate(100);
     assert!(matches!(enc.encode(&broken), Err(Error::Config(_))));
-    assert!(enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv420)).is_ok());
+    assert!(
+        enc.encode(&Frame::new(32, 32, ChromaFormat::Yuv420))
+            .is_ok()
+    );
 }
 
 #[test]
@@ -159,7 +215,10 @@ fn sequence_info_describes_the_stream() {
     let mut frames = dec.decode(&stream).unwrap();
     frames.extend(dec.flush().unwrap());
     let s = dec.sequence().unwrap();
-    assert_eq!((s.width, s.height, s.chroma), (40, 24, mpeg2::ChromaFormat::Yuv420));
+    assert_eq!(
+        (s.width, s.height, s.chroma),
+        (40, 24, mpeg2::ChromaFormat::Yuv420)
+    );
     assert_eq!(s.frame_rate, Some((30000, 1001)));
     assert_eq!(s.aspect_ratio_information, 3);
     assert_eq!(s.profile_and_level_indication, 0x48);

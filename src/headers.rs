@@ -79,8 +79,16 @@ impl SequenceHeader {
         marker(r, "sequence header")?;
         let vbv_buffer_size_value = r.read(10);
         let constrained_parameters_flag = r.read_bit();
-        let intra_quantiser_matrix = if r.read_bit() { Some(read_matrix(r)?) } else { None };
-        let non_intra_quantiser_matrix = if r.read_bit() { Some(read_matrix(r)?) } else { None };
+        let intra_quantiser_matrix = if r.read_bit() {
+            Some(read_matrix(r)?)
+        } else {
+            None
+        };
+        let non_intra_quantiser_matrix = if r.read_bit() {
+            Some(read_matrix(r)?)
+        } else {
+            None
+        };
         if r.overrun() {
             return Err(invalid("sequence header cut short"));
         }
@@ -229,7 +237,11 @@ impl GopHeader {
         if r.overrun() {
             return Err(invalid("group of pictures header cut short"));
         }
-        Ok(GopHeader { time_code, closed_gop, broken_link })
+        Ok(GopHeader {
+            time_code,
+            closed_gop,
+            broken_link,
+        })
     }
 
     pub(crate) fn write(&self, w: &mut BitWriter) {
@@ -324,7 +336,10 @@ pub(crate) struct PictureCodingExtension {
 
 impl PictureCodingExtension {
     pub(crate) fn parse(r: &mut BitReader) -> Result<Self> {
-        let f_code = [[r.read(4) as u8, r.read(4) as u8], [r.read(4) as u8, r.read(4) as u8]];
+        let f_code = [
+            [r.read(4) as u8, r.read(4) as u8],
+            [r.read(4) as u8, r.read(4) as u8],
+        ];
         let e = PictureCodingExtension {
             f_code,
             intra_dc_precision: r.read(2) as u8,
@@ -374,7 +389,10 @@ impl PictureCodingExtension {
     /// The values H.262 D.9.14 gives an ISO/IEC 11172-2 picture.
     pub(crate) fn mpeg1(h: &PictureHeader) -> Self {
         PictureCodingExtension {
-            f_code: [[h.forward_f_code, h.forward_f_code], [h.backward_f_code, h.backward_f_code]],
+            f_code: [
+                [h.forward_f_code, h.forward_f_code],
+                [h.backward_f_code, h.backward_f_code],
+            ],
             intra_dc_precision: 0,
             picture_structure: FRAME_PICTURE,
             top_field_first: true,
@@ -410,7 +428,12 @@ impl QuantMatrixExtension {
         if r.overrun() {
             return Err(invalid("quant matrix extension cut short"));
         }
-        Ok(QuantMatrixExtension { intra: m[0], non_intra: m[1], chroma_intra: m[2], chroma_non_intra: m[3] })
+        Ok(QuantMatrixExtension {
+            intra: m[0],
+            non_intra: m[1],
+            chroma_intra: m[2],
+            chroma_non_intra: m[3],
+        })
     }
 }
 
@@ -455,7 +478,10 @@ mod tests {
         let b = w.finish();
         let mut r = BitReader::new(&b[4..]);
         assert_eq!(SequenceHeader::parse(&mut r).unwrap(), sh);
-        let pos = b.windows(4).rposition(|x| x == [0, 0, 1, EXTENSION]).unwrap();
+        let pos = b
+            .windows(4)
+            .rposition(|x| x == [0, 0, 1, EXTENSION])
+            .unwrap();
         let mut r = BitReader::new(&b[pos + 4..]);
         assert_eq!(r.read(4), EXT_PICTURE_CODING);
         assert_eq!(PictureCodingExtension::parse(&mut r).unwrap(), pce);

@@ -44,7 +44,11 @@ pub(crate) struct Layout {
 impl Layout {
     /// Chroma lines per macroblock.
     fn ch(&self) -> usize {
-        if self.chroma == ChromaFormat::Yuv420 { 8 } else { 16 }
+        if self.chroma == ChromaFormat::Yuv420 {
+            8
+        } else {
+            16
+        }
     }
 
     /// Frame lines spanned by macroblock row `r` (luma, chroma): its first
@@ -55,12 +59,23 @@ impl Layout {
     }
 
     fn line(&self, row: usize) -> usize {
-        if self.frame { row } else { 2 * row + self.parity }
+        if self.frame {
+            row
+        } else {
+            2 * row + self.parity
+        }
     }
 
     /// Writes `mb` at macroblock `(mbx, mby)` into planes whose first line is
     /// frame line `l0[0]` (luma) / `l0[1]` (chroma).
-    fn write(&self, planes: &mut [&mut [u8]; 3], l0: [usize; 2], mbx: usize, mby: usize, mb: &MbPred) {
+    fn write(
+        &self,
+        planes: &mut [&mut [u8]; 3],
+        l0: [usize; 2],
+        mbx: usize,
+        mby: usize,
+        mb: &MbPred,
+    ) {
         let w = self.width;
         for y in 0..16 {
             let o = (self.line(mby * 16 + y) - l0[0]) * w + mbx * 16;
@@ -105,7 +120,8 @@ impl Band<'_> {
             self.writer[addr - self.rows.start * mbw] = self.slice;
             self.layout.write(&mut self.planes, self.l0, mbx, mby, mb);
         } else {
-            self.held.push((self.slice, addr, Box::new(MbPred { y: mb.y, c: mb.c })));
+            self.held
+                .push((self.slice, addr, Box::new(MbPred { y: mb.y, c: mb.c })));
         }
     }
 }
@@ -113,7 +129,12 @@ impl Band<'_> {
 /// Splits `buf` (the picture being decoded, laid out as `layout`) and the
 /// per-macroblock `writer` map into bands of macroblock rows, the band `i`
 /// rows `bounds[i]..bounds[i + 1]`.
-pub(crate) fn split<'a>(buf: &'a mut PicBuf, writer: &'a mut [u32], layout: Layout, bounds: &[usize]) -> Vec<Band<'a>> {
+pub(crate) fn split<'a>(
+    buf: &'a mut PicBuf,
+    writer: &'a mut [u32],
+    layout: Layout,
+    bounds: &[usize],
+) -> Vec<Band<'a>> {
     let [p0, p1, p2] = &mut buf.planes;
     let (mut y, mut u, mut v) = (&mut p0[..], &mut p1[..], &mut p2[..]);
     let mut wr = writer;
@@ -128,7 +149,11 @@ pub(crate) fn split<'a>(buf: &'a mut PicBuf, writer: &'a mut [u32], layout: Layo
         // The last band takes whatever is left (the planes may be taller
         // than the rows, never shorter).
         let take = |s: &mut &'a mut [u8], lines: usize, w: usize| -> &'a mut [u8] {
-            let n = if last { s.len() } else { (lines * w).min(s.len()) };
+            let n = if last {
+                s.len()
+            } else {
+                (lines * w).min(s.len())
+            };
             let (a, b) = std::mem::take(s).split_at_mut(n);
             *s = b;
             a
@@ -136,11 +161,23 @@ pub(crate) fn split<'a>(buf: &'a mut PicBuf, writer: &'a mut [u32], layout: Layo
         let by = take(&mut y, l1 - l0, layout.width);
         let bu = take(&mut u, c1 - c0, layout.cwidth);
         let bv = take(&mut v, c1 - c0, layout.cwidth);
-        let n = if last { wr.len() } else { ((r1 - r0) * layout.mb_width).min(wr.len()) };
+        let n = if last {
+            wr.len()
+        } else {
+            ((r1 - r0) * layout.mb_width).min(wr.len())
+        };
         let (bw, rest) = std::mem::take(&mut wr).split_at_mut(n);
         wr = rest;
         taken = [l1, c1];
-        bands.push(Band { layout, rows: r0..r1, planes: [by, bu, bv], l0: [l0, c0], writer: bw, slice: 0, held: Vec::new() });
+        bands.push(Band {
+            layout,
+            rows: r0..r1,
+            planes: [by, bu, bv],
+            l0: [l0, c0],
+            writer: bw,
+            slice: 0,
+            held: Vec::new(),
+        });
     }
     bands
 }

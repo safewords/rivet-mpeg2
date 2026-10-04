@@ -14,7 +14,9 @@ fn main() {
         std::process::exit(2);
     };
     let data = std::fs::read(input).expect("read input");
-    let mut out = args.get(2).map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create output")));
+    let mut out = args
+        .get(2)
+        .map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("create output")));
     let mut dec = mpeg2::Decoder::new();
     let mut frames = Vec::new();
     let mut errors = 0;
@@ -37,7 +39,13 @@ fn main() {
     if let Some(s) = dec.sequence() {
         println!(
             "{}x{} {:?} rate {:?} mpeg1 {} progressive_sequence {} profile/level {:#04x}",
-            s.width, s.height, s.chroma, s.frame_rate, s.mpeg1, s.progressive_sequence, s.profile_and_level_indication
+            s.width,
+            s.height,
+            s.chroma,
+            s.frame_rate,
+            s.mpeg1,
+            s.progressive_sequence,
+            s.profile_and_level_indication
         );
     }
     for (i, f) in frames.iter().enumerate() {

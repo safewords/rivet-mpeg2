@@ -155,8 +155,14 @@ mod tests {
     #[test]
     fn round_trip_fields() {
         let mut w = BitWriter::new();
-        let fields: &[(u32, u32)] =
-            &[(1, 1), (3, 5), (12, 0xabc), (32, 0xdead_beef), (7, 0x55), (2, 2)];
+        let fields: &[(u32, u32)] = &[
+            (1, 1),
+            (3, 5),
+            (12, 0xabc),
+            (32, 0xdead_beef),
+            (7, 0x55),
+            (2, 2),
+        ];
         for &(n, v) in fields {
             w.put(n, v);
         }

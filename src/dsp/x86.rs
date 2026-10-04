@@ -23,9 +23,17 @@ static SSE2: Dsp = Dsp {
     sad16: sad16_sse2,
 };
 
-static AVX2: Dsp = Dsp { name: "avx2", transform: transform_avx2_entry, ..SSE2 };
+static AVX2: Dsp = Dsp {
+    name: "avx2",
+    transform: transform_avx2_entry,
+    ..SSE2
+};
 
-static AVX512: Dsp = Dsp { name: "avx512", transform: transform_avx512_entry, ..SSE2 };
+static AVX512: Dsp = Dsp {
+    name: "avx512",
+    transform: transform_avx512_entry,
+    ..SSE2
+};
 
 /// The rungs this processor runs, narrowest first.
 pub(super) fn rungs() -> Vec<&'static Dsp> {
@@ -45,7 +53,12 @@ pub(super) fn rungs() -> Vec<&'static Dsp> {
 #[target_feature(enable = "sse2")]
 #[inline]
 fn row2(r: &[f64; 8]) -> [__m128d; 4] {
-    [_mm_set_pd(r[1], r[0]), _mm_set_pd(r[3], r[2]), _mm_set_pd(r[5], r[4]), _mm_set_pd(r[7], r[6])]
+    [
+        _mm_set_pd(r[1], r[0]),
+        _mm_set_pd(r[3], r[2]),
+        _mm_set_pd(r[5], r[4]),
+        _mm_set_pd(r[7], r[6]),
+    ]
 }
 
 /// Rounds half away from zero, clamps to [lo, hi] and truncates to i32 (two
@@ -70,7 +83,13 @@ fn transform_sse2(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo:
 }
 
 #[target_feature(enable = "sse2")]
-fn transform_sse2_impl(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn transform_sse2_impl(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     match live_extent(input) {
         (0, false) => tr_sse2::<0, false>(input, m, out, lo, hi),
         (1, false) => tr_sse2::<1, false>(input, m, out, lo, hi),
@@ -100,7 +119,13 @@ fn transform_sse2_impl(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64]
 /// registers.
 #[target_feature(enable = "sse2")]
 #[inline]
-fn tr_sse2<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn tr_sse2<const K: usize, const R7: bool>(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     let mrows: [[__m128d; 4]; 8] = std::array::from_fn(|u| row2(&m[u]));
     // Rows: tmp[v][x] = Σ_u in[v][u]·M[u][x], in order of u.
     let mut tmp = [[_mm_setzero_pd(); 4]; K];
@@ -135,8 +160,14 @@ fn tr_sse2<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8],
                 acc[q] = _mm_add_pd(acc[q], _mm_mul_pd(tmp7[q], k));
             }
         }
-        let r0 = _mm_unpacklo_epi64(round_clamp_sse2(acc[0], lo, hi), round_clamp_sse2(acc[1], lo, hi));
-        let r1 = _mm_unpacklo_epi64(round_clamp_sse2(acc[2], lo, hi), round_clamp_sse2(acc[3], lo, hi));
+        let r0 = _mm_unpacklo_epi64(
+            round_clamp_sse2(acc[0], lo, hi),
+            round_clamp_sse2(acc[1], lo, hi),
+        );
+        let r1 = _mm_unpacklo_epi64(
+            round_clamp_sse2(acc[2], lo, hi),
+            round_clamp_sse2(acc[3], lo, hi),
+        );
         let o = &mut out[y * 8..y * 8 + 8];
         // SAFETY: `o` is 8 i32s (32 bytes); the stores write bytes 0..16 and
         // 16..32 of it, unaligned stores.
@@ -147,8 +178,13 @@ fn tr_sse2<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8],
     }
 }
 
-
-fn transform_avx2_entry(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn transform_avx2_entry(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     // SAFETY: this entry is only reachable through the AVX2 rung, which
     // rungs() installs after is_x86_feature_detected!("avx2").
     unsafe { transform_avx2(input, m, out, lo, hi) }
@@ -185,10 +221,20 @@ fn transform_avx2(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo:
 /// registers.
 #[target_feature(enable = "avx2")]
 #[inline]
-fn tr_avx2<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn tr_avx2<const K: usize, const R7: bool>(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     // SAFETY: each load reads f64s 0..4 or 4..8 of an 8-element row.
-    let mrows: [[__m256d; 2]; 8] =
-        std::array::from_fn(|u| unsafe { [_mm256_loadu_pd(m[u].as_ptr()), _mm256_loadu_pd(m[u].as_ptr().add(4))] });
+    let mrows: [[__m256d; 2]; 8] = std::array::from_fn(|u| unsafe {
+        [
+            _mm256_loadu_pd(m[u].as_ptr()),
+            _mm256_loadu_pd(m[u].as_ptr().add(4)),
+        ]
+    });
     // The live rows' coefficients as doubles, for broadcasting.
     let mut ind = [0.0f64; 64];
     for (d, &c) in ind[..K * 8].iter_mut().zip(&input[..K * 8]) {
@@ -243,8 +289,13 @@ fn tr_avx2<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8],
     }
 }
 
-
-fn transform_avx512_entry(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn transform_avx512_entry(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     // SAFETY: this entry is only reachable through the AVX-512 rung, which
     // rungs() installs after is_x86_feature_detected!("avx512f").
     unsafe { transform_avx512(input, m, out, lo, hi) }
@@ -281,7 +332,13 @@ fn transform_avx512(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], l
 /// registers.
 #[target_feature(enable = "avx512f")]
 #[inline]
-fn tr_avx512<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn tr_avx512<const K: usize, const R7: bool>(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     // SAFETY: each load reads the 8 f64s of a row.
     let mrows: [__m512d; 8] = std::array::from_fn(|u| unsafe { _mm512_loadu_pd(m[u].as_ptr()) });
     let mut ind = [0.0f64; 64];
@@ -297,7 +354,10 @@ fn tr_avx512<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8
     let mut tmp7 = _mm512_setzero_pd();
     for u in 0..8 {
         for v in 0..K {
-            tmp[v] = _mm512_add_pd(tmp[v], _mm512_mul_pd(_mm512_set1_pd(ind[v * 8 + u]), mrows[u]));
+            tmp[v] = _mm512_add_pd(
+                tmp[v],
+                _mm512_mul_pd(_mm512_set1_pd(ind[v * 8 + u]), mrows[u]),
+            );
         }
         if R7 {
             tmp7 = _mm512_add_pd(tmp7, _mm512_mul_pd(_mm512_set1_pd(ind[56 + u]), mrows[u]));
@@ -326,7 +386,6 @@ fn tr_avx512<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8
     }
 }
 
-
 // ------------------------------------------------------- motion compensation
 
 fn mc_sse2(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
@@ -338,7 +397,10 @@ fn mc_sse2(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
 #[target_feature(enable = "sse2")]
 fn mc_sse2_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
     s.check();
-    assert!(off + (s.h - 1) * stride + s.w <= dst.len(), "prediction outside its buffer");
+    assert!(
+        off + (s.h - 1) * stride + s.w <= dst.len(),
+        "prediction outside its buffer"
+    );
     macro_rules! go {
         ($($w:literal),*) => {
             match (s.w, s.hx, s.hy, avg) {
@@ -367,7 +429,13 @@ fn mc_sse2_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool)
 #[inline]
 unsafe fn load<const W: usize>(p: *const u8) -> __m128i {
     // SAFETY: the caller guarantees W readable bytes at p.
-    unsafe { if W == 16 { _mm_loadu_si128(p.cast()) } else { _mm_loadl_epi64(p.cast()) } }
+    unsafe {
+        if W == 16 {
+            _mm_loadu_si128(p.cast())
+        } else {
+            _mm_loadl_epi64(p.cast())
+        }
+    }
 }
 
 /// The interpolated row at `p` (and, with `HY`, the row `stride` below).
@@ -377,7 +445,10 @@ unsafe fn load<const W: usize>(p: *const u8) -> __m128i {
 /// readable.
 #[target_feature(enable = "sse2")]
 #[inline]
-unsafe fn interp<const W: usize, const HX: bool, const HY: bool>(p: *const u8, stride: usize) -> __m128i {
+unsafe fn interp<const W: usize, const HX: bool, const HY: bool>(
+    p: *const u8,
+    stride: usize,
+) -> __m128i {
     // SAFETY: every load is of W bytes at p, p + 1 (HX), p + stride (HY) or
     // p + stride + 1 (both), which the caller guarantees readable.
     unsafe {
@@ -388,7 +459,11 @@ unsafe fn interp<const W: usize, const HX: bool, const HY: bool>(p: *const u8, s
             (false, true) => _mm_avg_epu8(a, load::<W>(p.add(stride))),
             (true, true) => {
                 let z = _mm_setzero_si128();
-                let (a1, b, b1) = (load::<W>(p.add(1)), load::<W>(p.add(stride)), load::<W>(p.add(stride + 1)));
+                let (a1, b, b1) = (
+                    load::<W>(p.add(1)),
+                    load::<W>(p.add(stride)),
+                    load::<W>(p.add(stride + 1)),
+                );
                 let two = _mm_set1_epi16(2);
                 let lo = _mm_add_epi16(
                     _mm_add_epi16(_mm_unpacklo_epi8(a, z), _mm_unpacklo_epi8(a1, z)),
@@ -426,7 +501,11 @@ fn mc_rows<const W: usize, const HX: bool, const HY: bool, const AVG: bool>(
         unsafe {
             let p = interp::<W, HX, HY>(s.src.as_ptr().add(s.off + j * s.stride), s.stride);
             let d = dst.as_mut_ptr().add(off + j * stride);
-            let p = if AVG { _mm_avg_epu8(p, load::<W>(d)) } else { p };
+            let p = if AVG {
+                _mm_avg_epu8(p, load::<W>(d))
+            } else {
+                p
+            };
             if W == 16 {
                 _mm_storeu_si128(d.cast(), p);
             } else {
@@ -444,7 +523,12 @@ fn mc_rows<const W: usize, const HX: bool, const HY: bool, const AVG: bool>(
 fn residual_row(res: &[i32; 64], y: usize) -> __m128i {
     let r = &res[y * 8..y * 8 + 8];
     // SAFETY: `r` is 8 i32s; the loads read i32s 0..4 and 4..8.
-    unsafe { _mm_packs_epi32(_mm_loadu_si128(r.as_ptr().cast()), _mm_loadu_si128(r.as_ptr().add(4).cast())) }
+    unsafe {
+        _mm_packs_epi32(
+            _mm_loadu_si128(r.as_ptr().cast()),
+            _mm_loadu_si128(r.as_ptr().add(4).cast()),
+        )
+    }
 }
 
 fn add_block_sse2(dst: &mut [u8], off: usize, stride: usize, res: &[i32; 64]) {
@@ -482,7 +566,12 @@ fn put_block_sse2_impl(dst: &mut [u8], off: usize, stride: usize, res: &[i32; 64
     for y in 0..8 {
         let r = residual_row(res, y);
         // SAFETY: check_block8 proved 8 bytes at off + y * stride are in dst.
-        unsafe { _mm_storel_epi64(dst.as_mut_ptr().add(off + y * stride).cast(), _mm_packus_epi16(r, z)) };
+        unsafe {
+            _mm_storel_epi64(
+                dst.as_mut_ptr().add(off + y * stride).cast(),
+                _mm_packus_epi16(r, z),
+            )
+        };
     }
 }
 

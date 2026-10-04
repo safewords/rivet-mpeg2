@@ -14,27 +14,74 @@ fn sad_full(src: &PicBuf, refp: &PicBuf, x: usize, y: usize, dx: i32, dy: i32, l
     let w = src.width;
     let rx = (x as i32 + dx) as usize;
     let ry = (y as i32 + dy) as usize;
-    let a = Blk { buf: &src.planes[0], off: y * w + x, stride: w };
-    (crate::dsp::dsp().sad16)(a, Blk { buf: &refp.planes[0], off: ry * w + rx, stride: w }, limit)
+    let a = Blk {
+        buf: &src.planes[0],
+        off: y * w + x,
+        stride: w,
+    };
+    (crate::dsp::dsp().sad16)(
+        a,
+        Blk {
+            buf: &refp.planes[0],
+            off: ry * w + rx,
+            stride: w,
+        },
+        limit,
+    )
 }
 
 /// SAD of a source macroblock's luma against a prediction.
 pub(crate) fn sad_pred(src: &PicBuf, x: usize, y: usize, pred: &[u8; 256]) -> u32 {
     let w = src.width;
-    let a = Blk { buf: &src.planes[0], off: y * w + x, stride: w };
-    (crate::dsp::dsp().sad16)(a, Blk { buf: pred, off: 0, stride: 16 }, u32::MAX)
+    let a = Blk {
+        buf: &src.planes[0],
+        off: y * w + x,
+        stride: w,
+    };
+    (crate::dsp::dsp().sad16)(
+        a,
+        Blk {
+            buf: pred,
+            off: 0,
+            stride: 16,
+        },
+        u32::MAX,
+    )
 }
 
 /// Forms the frame prediction of the macroblock at (`x`, `y`) from `refp`
 /// with the half-sample vector `mv` (all components).
-pub(crate) fn predict(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg: bool, pred: &mut MbPred) {
-    let r = Region { x: x as i32, y: y as i32, h: 16, dst_row: 0, dst_parity: 0, dst_step: 1, mv, avg };
+pub(crate) fn predict(
+    refp: &PicBuf,
+    x: usize,
+    y: usize,
+    mv: [i32; 2],
+    avg: bool,
+    pred: &mut MbPred,
+) {
+    let r = Region {
+        x: x as i32,
+        y: y as i32,
+        h: 16,
+        dst_row: 0,
+        dst_parity: 0,
+        dst_step: 1,
+        mv,
+        avg,
+    };
     mc::predict(refp, View::Frame, ChromaFormat::Yuv420, &r, pred);
 }
 
 /// The luma alone of [`predict`]'s prediction: what the searches compare
 /// candidates by.
-pub(crate) fn predict_luma(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg: bool, pred: &mut [u8; 256]) {
+pub(crate) fn predict_luma(
+    refp: &PicBuf,
+    x: usize,
+    y: usize,
+    mv: [i32; 2],
+    avg: bool,
+    pred: &mut [u8; 256],
+) {
     let w = refp.width as i32;
     let (ix, iy) = (x as i32 + (mv[0] >> 1), y as i32 + (mv[1] >> 1));
     let (hx, hy) = (mv[0] & 1, mv[1] & 1);
@@ -50,7 +97,10 @@ pub(crate) fn predict_luma(refp: &PicBuf, x: usize, y: usize, mv: [i32; 2], avg:
         };
         (crate::dsp::dsp().mc)(&s, pred, 0, 16, avg);
     } else {
-        let mut p = MbPred { y: *pred, c: [[0; 128]; 2] };
+        let mut p = MbPred {
+            y: *pred,
+            c: [[0; 128]; 2],
+        };
         predict(refp, x, y, mv, avg, &mut p);
         *pred = p.y;
     }
@@ -77,13 +127,23 @@ pub(crate) fn search(
     // Whole-sample limits: the 16×16 block (plus one column / row for a
     // half-sample offset) stays inside the picture.
     let min_dx = (-xi).max(-range).max(low.div_euclid(2));
-    let max_dx = (w - 16 - xi - 1).min(range).min(high.div_euclid(2)).max(min_dx);
+    let max_dx = (w - 16 - xi - 1)
+        .min(range)
+        .min(high.div_euclid(2))
+        .max(min_dx);
     let min_dy = (-yi).max(-range).max(low.div_euclid(2));
-    let max_dy = (h - 16 - yi - 1).min(range).min(high.div_euclid(2)).max(min_dy);
+    let max_dy = (h - 16 - yi - 1)
+        .min(range)
+        .min(high.div_euclid(2))
+        .max(min_dy);
     let ok = |dx: i32, dy: i32| (min_dx..=max_dx).contains(&dx) && (min_dy..=max_dy).contains(&dy);
 
     let mut best = (0i32, 0i32);
-    let mut best_sad = if ok(0, 0) { sad_full(src, refp, x, y, 0, 0, u32::MAX) } else { u32::MAX };
+    let mut best_sad = if ok(0, 0) {
+        sad_full(src, refp, x, y, 0, 0, u32::MAX)
+    } else {
+        u32::MAX
+    };
     if !ok(0, 0) {
         best = (min_dx.max(0).min(max_dx), min_dy.max(0).min(max_dy));
         best_sad = sad_full(src, refp, x, y, best.0, best.1, u32::MAX);

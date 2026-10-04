@@ -30,7 +30,13 @@ fn transform_neon(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo:
 }
 
 #[target_feature(enable = "neon")]
-fn transform_neon_impl(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn transform_neon_impl(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     match live_extent(input) {
         (0, false) => tr_neon::<0, false>(input, m, out, lo, hi),
         (1, false) => tr_neon::<1, false>(input, m, out, lo, hi),
@@ -60,10 +66,17 @@ fn transform_neon_impl(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64]
 /// registers.
 #[target_feature(enable = "neon")]
 #[inline]
-fn tr_neon<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8], out: &mut [i32; 64], lo: i32, hi: i32) {
+fn tr_neon<const K: usize, const R7: bool>(
+    input: &[i32; 64],
+    m: &[[f64; 8]; 8],
+    out: &mut [i32; 64],
+    lo: i32,
+    hi: i32,
+) {
     // SAFETY: each load reads two f64s at 2q..2q+2 of an 8-element row.
-    let mrows: [[float64x2_t; 4]; 8] =
-        std::array::from_fn(|u| std::array::from_fn(|q| unsafe { vld1q_f64(m[u].as_ptr().add(2 * q)) }));
+    let mrows: [[float64x2_t; 4]; 8] = std::array::from_fn(|u| {
+        std::array::from_fn(|q| unsafe { vld1q_f64(m[u].as_ptr().add(2 * q)) })
+    });
     // vmulq then vaddq: two roundings, as the scalar code (no vfmaq).
     let mut tmp = [[vdupq_n_f64(0.0); 4]; K];
     let mut tmp7 = [vdupq_n_f64(0.0); 4];
@@ -107,7 +120,6 @@ fn tr_neon<const K: usize, const R7: bool>(input: &[i32; 64], m: &[[f64; 8]; 8],
     }
 }
 
-
 fn mc_neon(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
     // SAFETY: NEON is part of the AArch64 baseline: every AArch64 processor
     // has it.
@@ -117,7 +129,10 @@ fn mc_neon(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
 #[target_feature(enable = "neon")]
 fn mc_neon_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool) {
     s.check();
-    assert!(off + (s.h - 1) * stride + s.w <= dst.len(), "prediction outside its buffer");
+    assert!(
+        off + (s.h - 1) * stride + s.w <= dst.len(),
+        "prediction outside its buffer"
+    );
     if s.w == 16 {
         for j in 0..s.h {
             // SAFETY: s.check() proved rows 0..h (+1 with hy) of 16 (+1 with
@@ -132,10 +147,19 @@ fn mc_neon_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool)
                     (true, false) => vrhaddq_u8(a, vld1q_u8(p.add(1))),
                     (false, true) => vrhaddq_u8(a, vld1q_u8(p.add(s.stride))),
                     (true, true) => {
-                        let (a1, b, b1) = (vld1q_u8(p.add(1)), vld1q_u8(p.add(s.stride)), vld1q_u8(p.add(s.stride + 1)));
-                        let lo = vaddq_u16(vaddl_u8(vget_low_u8(a), vget_low_u8(a1)), vaddl_u8(vget_low_u8(b), vget_low_u8(b1)));
-                        let hi =
-                            vaddq_u16(vaddl_u8(vget_high_u8(a), vget_high_u8(a1)), vaddl_u8(vget_high_u8(b), vget_high_u8(b1)));
+                        let (a1, b, b1) = (
+                            vld1q_u8(p.add(1)),
+                            vld1q_u8(p.add(s.stride)),
+                            vld1q_u8(p.add(s.stride + 1)),
+                        );
+                        let lo = vaddq_u16(
+                            vaddl_u8(vget_low_u8(a), vget_low_u8(a1)),
+                            vaddl_u8(vget_low_u8(b), vget_low_u8(b1)),
+                        );
+                        let hi = vaddq_u16(
+                            vaddl_u8(vget_high_u8(a), vget_high_u8(a1)),
+                            vaddl_u8(vget_high_u8(b), vget_high_u8(b1)),
+                        );
                         vcombine_u8(vrshrn_n_u16::<2>(lo), vrshrn_n_u16::<2>(hi))
                     }
                 };
@@ -155,7 +179,11 @@ fn mc_neon_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool)
                     (true, false) => vrhadd_u8(a, vld1_u8(p.add(1))),
                     (false, true) => vrhadd_u8(a, vld1_u8(p.add(s.stride))),
                     (true, true) => {
-                        let (a1, b, b1) = (vld1_u8(p.add(1)), vld1_u8(p.add(s.stride)), vld1_u8(p.add(s.stride + 1)));
+                        let (a1, b, b1) = (
+                            vld1_u8(p.add(1)),
+                            vld1_u8(p.add(s.stride)),
+                            vld1_u8(p.add(s.stride + 1)),
+                        );
                         vrshrn_n_u16::<2>(vaddq_u16(vaddl_u8(a, a1), vaddl_u8(b, b1)))
                     }
                 };
@@ -173,7 +201,12 @@ fn mc_neon_impl(s: &McSrc, dst: &mut [u8], off: usize, stride: usize, avg: bool)
 fn residual_row(res: &[i32; 64], y: usize) -> int16x8_t {
     let r = &res[y * 8..y * 8 + 8];
     // SAFETY: `r` is 8 i32s; the loads read i32s 0..4 and 4..8.
-    unsafe { vcombine_s16(vqmovn_s32(vld1q_s32(r.as_ptr())), vqmovn_s32(vld1q_s32(r.as_ptr().add(4)))) }
+    unsafe {
+        vcombine_s16(
+            vqmovn_s32(vld1q_s32(r.as_ptr())),
+            vqmovn_s32(vld1q_s32(r.as_ptr().add(4))),
+        )
+    }
 }
 
 fn add_block_neon(dst: &mut [u8], off: usize, stride: usize, res: &[i32; 64]) {
