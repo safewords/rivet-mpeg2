@@ -57,7 +57,9 @@
 //! Annex A requires; the decoder decodes all 57 main- and 4:2:2-profile
 //! conformance bitstreams of ISO/IEC 13818-4 and matches, sample for sample,
 //! the reconstructions their traces carry. See the README for the figures.
-// rivet builds this crate from its submodule at crates/mpeg2; a push to this// repository's develop warms rivet's compile cache with it (rivet's// .github/workflows/codec-cache-warmup.yml).
+// rivet builds this crate from its submodule at crates/mpeg2; a push to this
+// repository's develop warms rivet's compile cache with it (rivet's
+// .github/workflows/codec-cache-warmup.yml).
 
 #![warn(missing_docs)]
 
