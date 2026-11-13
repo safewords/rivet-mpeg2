@@ -523,9 +523,8 @@ fn write_macroblock(
         st.pmv = [[0; 2]; 2];
         st.prev_dirs = 0;
         let table = usize::from(s.intra_vlc_format);
-        for b in 0..6 {
+        for (b, q) in mb.qf.iter().enumerate() {
             let cc = if b < 4 { 0 } else { b - 3 };
-            let q = &mb.qf[b];
             e.put_dc(w, cc > 0, q[0] - st.dc_pred[cc]);
             st.dc_pred[cc] = q[0];
             write_coefficients(s, e, w, q, 1, table, false);

@@ -317,7 +317,7 @@ mod tests {
     fn every_dct_code_decodes_to_its_own_pair() {
         let d = decoders();
         let e = encoders();
-        for table in 0..2 {
+        for (table, dct) in d.dct.iter().enumerate() {
             for run in 0..32 {
                 for level in 1..=40 {
                     for sign in [1, -1] {
@@ -329,7 +329,7 @@ mod tests {
                         e.put_dct(&mut w, table, run, lv, false);
                         let bytes = w.finish();
                         let mut r = BitReader::new(&bytes);
-                        let v = d.dct[table].decode(&mut r).unwrap();
+                        let v = dct.decode(&mut r).unwrap();
                         let (r2, l2) = split_run_level(v);
                         let l2 = if r.read_bit() { -l2 } else { l2 };
                         assert_eq!((r2, l2), (run, lv));

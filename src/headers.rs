@@ -367,9 +367,9 @@ impl PictureCodingExtension {
     pub(crate) fn write(&self, w: &mut BitWriter) {
         w.start_code(EXTENSION);
         w.put(4, EXT_PICTURE_CODING);
-        for s in 0..2 {
-            for t in 0..2 {
-                w.put(4, u32::from(self.f_code[s][t]));
+        for direction in &self.f_code {
+            for &f_code in direction {
+                w.put(4, u32::from(f_code));
             }
         }
         w.put(2, u32::from(self.intra_dc_precision));
